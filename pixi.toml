@@ -1,0 +1,85 @@
+[workspace]
+name = "black-mesa-head-tracking"
+version = "0.0.0"
+description = "Head tracking mod for Black Mesa (Source Engine) using the CameraUnlock shared library"
+license = "MIT"
+license-file = "LICENSE"
+channels = ["conda-forge"]
+platforms = ["win-64"]
+
+[tasks]
+# Pull cameraunlock-core to the tip of its tracked branch. Manual: the new
+# pointer is a deliberate commit, no build task depends on this.
+sync = { cmd = "git submodule update --remote cameraunlock-core" }
+
+# Black Mesa's bms.exe is 32-bit Source Engine - build x86.
+# No -G: let CMake auto-detect the installed Visual Studio generator. Pinning
+# "Visual Studio 17 2022" broke on CI once the windows runner image moved to
+# VS 2026 (VS 17 absent); auto-detect picks whatever VS the machine has.
+# Keyed on build/CMakeCache.txt, not on the directory: a configure that failed
+# or was interrupted leaves a build/ with no cache behind, and testing the
+# directory alone then skipped setup forever, so every later `pixi run build`
+# failed on a directory cmake had never finished configuring.
+setup = { cmd = """
+    powershell -Command "if (Test-Path 'build/CMakeCache.txt') { Write-Host 'Build directory already configured, skipping setup' -ForegroundColor Yellow; exit 0 }; cmake -B build -A Win32"
+""" }
+
+build = { cmd = "cmake --build build --config Debug", depends-on = ["setup"] }
+build-release = { cmd = "cmake --build build --config Release", depends-on = ["setup"] }
+
+clean = { cmd = """
+    powershell -Command "if (Test-Path 'build') { Remove-Item 'build' -Recurse -Force }; Write-Host 'Build artifacts cleaned' -ForegroundColor Green"
+""" }
+
+# clean plus the packaged ZIPs. Chained rather than repeating clean's removal,
+# so the two tasks cannot drift apart over what "build output" means.
+clean-all = { cmd = """
+    powershell -Command "if (Test-Path 'release') { Remove-Item 'release' -Recurse -Force }; Write-Host 'Release artifacts cleaned' -ForegroundColor Green"
+""", depends-on = ["clean"] }
+
+# The C++ characterization suite under tests/: the Source camera maths, the
+# config -> PositionSettings mapping, the render-path log schedule and the
+# build-profile dormancy failsafes. `build` produces it, so this runs it rather
+# than rebuilding it a second way.
+test-cpp = { cmd = "ctest --test-dir build -C Debug --output-on-failure", depends-on = ["build"] }
+
+# Behaviour lock for the two script modules: ModVersion.psm1, which every version
+# read and write in this repo goes through, and PackageGuards.psm1, which decides
+# what a release ZIP is allowed to carry. No Pester: matches
+# cameraunlock-core/powershell/tests.
+#
+# Depends on test-cpp so `pixi run test` is the whole gate. The C++ suite was
+# compiled by every build and run by nothing, which is how a characterization
+# test quietly stops characterizing anything.
+test = { cmd = """
+    powershell -NoProfile -ExecutionPolicy Bypass -File scripts/tests/ModVersion.Tests.ps1 &&
+    powershell -NoProfile -ExecutionPolicy Bypass -File scripts/tests/PackageGuards.Tests.ps1
+""", depends-on = ["test-cpp"] }
+
+# Bump the vendored Ultimate ASI Loader. Manual; review and commit the diff.
+# No build/package/release task depends on this, and CI never runs it - the
+# committed vendor/ tree is the install-time source of truth.
+update-deps = { cmd = "powershell -ExecutionPolicy Bypass -File scripts/update-deps.ps1" }
+
+# Strip the third-party DLLs the upstream x86 loader embeds as resources
+# (binkw32.dll, wndmode.dll, vorbisfile.dll). update-deps runs this already;
+# the task exists for a loader copied in by hand.
+strip-loader = { cmd = "powershell -ExecutionPolicy Bypass -File scripts/strip-loader-payload.ps1 -Path vendor/ultimate-asi-loader/dinput8.dll" }
+
+# Package release ZIPs (installer + nexus variants).
+package = { cmd = "powershell -ExecutionPolicy Bypass -File scripts/package-release.ps1", depends-on = ["build-release"] }
+
+# Cut a release: pixi run release <major|minor|patch|nightly|X.Y.Z>
+release = "powershell -ExecutionPolicy Bypass -File scripts/release.ps1"
+
+# The dev-channel build. `pixi run release nightly` reaches the same script;
+# this is the direct entry point, and the name the fleet's tooling expects.
+release-nightly = "powershell -ExecutionPolicy Bypass -File scripts/release-nightly.ps1"
+
+# Build + dev-deploy the debug .asi straight beside bms.exe. install.cmd is
+# the release-ZIP installer (deploys from a staged plugins\ folder) and is not
+# the dev path - it ships in the packaged release for the launcher / Nexus.
+install = { cmd = "powershell -ExecutionPolicy Bypass -File scripts/deploy.ps1 Debug", depends-on = ["build"] }
+uninstall = "scripts\\uninstall.cmd"
+
+[dependencies]

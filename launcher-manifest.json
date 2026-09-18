@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "mod_info": {
+    "id": "black-mesa-headtracking",
+    "name": "Black Mesa Head Tracking",
+    "version": "0.0.0",
+    "author": "itsloopyo \u2013 Loopy"
+  },
+  "delivery_mode": "installer",
+  "files": [ { "source": "plugins/BlackMesaHeadTracking.asi", "target": "BlackMesaHeadTracking.asi" } ]
+}
