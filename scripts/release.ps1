@@ -169,7 +169,7 @@ if (-not $hasTags) {
         # Same pathspecs release.yml passes to generate-release-notes.ps1, so
         # the changelog and the GitHub release notes cover the same commits.
         New-ChangelogFromCommits -ChangelogPath $changelogPath -Version $Version `
-            -ArtifactPaths @('src/', 'cameraunlock-core', 'scripts/install.cmd', 'scripts/uninstall.cmd')
+            -ArtifactPaths @('src/', 'cameraunlock-core', 'scripts/install.cmd', 'scripts/uninstall.cmd', 'launcher-manifest.json')
     } catch {
         if (-not $Force) {
             Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
