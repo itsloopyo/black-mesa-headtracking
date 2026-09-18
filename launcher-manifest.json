@@ -1,11 +1,25 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "mod_info": {
-    "id": "black-mesa-headtracking",
-    "name": "Black Mesa Head Tracking",
+    "name": "BlackMesaHeadTracking",
     "version": "0.0.0",
-    "author": "itsloopyo \u2013 Loopy"
+    "game_id": "black-mesa"
   },
-  "delivery_mode": "installer",
-  "files": [ { "source": "plugins/BlackMesaHeadTracking.asi", "target": "BlackMesaHeadTracking.asi" } ]
+  "strategy": "AsiLoader",
+  "delivery_mode": "manifest",
+
+  "files": [
+    {
+      "source": "vendor/ultimate-asi-loader/dinput8.dll",
+      "target": "winmm.dll",
+      "backup": true
+    },
+    {
+      "source": "plugins/BlackMesaHeadTracking.asi",
+      "target": "BlackMesaHeadTracking.asi"
+    }
+  ],
+
+  "runtime_requirements": [],
+  "dependencies": []
 }
