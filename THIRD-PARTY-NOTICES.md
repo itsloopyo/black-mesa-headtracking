@@ -10,7 +10,7 @@ there for this game.
 
 ## cameraunlock-core
 
-- **Version:** daa973c8ebf7adea8e61a98df6b2eafad4126928
+- **Version:** 3f3a821aa00d5b87ecde7c4af77585ff2fc71ff5
 - **License:** MIT
 - **Upstream:** https://github.com/itsloopyo/cameraunlock-core
 - **Usage:** Shared head tracking library supplying the OpenTrack UDP receiver, pose interpolation and smoothing, INI reading, hotkey polling, PE fingerprinting and the hook manager.
