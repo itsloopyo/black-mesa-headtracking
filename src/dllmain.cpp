@@ -3,7 +3,9 @@
 #include "pch.h"
 
 #include <exception>
+#include <string>
 
+#include "cameraunlock/os/module_paths.h"
 #include "config.h"
 #include "debug_log.h"
 #include "plugin.h"
@@ -15,17 +17,33 @@ namespace {
 // This is the mod's outermost frame. An exception leaving a thread entry point
 // is std::terminate, which kills the game the mod was supposed to be a guest
 // in - so the whole of setup sits inside the guard, and a failure leaves a
-// dormant mod and a log line behind instead. Nothing below is expected to
-// throw (the config path validates at the boundary and no longer calls the
-// throwing filesystem overloads), but it allocates, and a mod is never worth a
-// dead process.
+// dormant mod and a log line behind instead. The config is loaded before the
+// log is opened, since [Debug] LogToFile decides whether there is one; the
+// owner hands its lines back and they are written once the log is up.
 DWORD WINAPI BootstrapThread(LPVOID) {
     try {
-        if (headtracking::Config::FileLoggingRequested()) headtracking::OpenLogFile();
+        // bms.exe's folder, where HeadTracking.ini has always been and CameraUnlock.ini goes.
+        const std::wstring exeDir = cameraunlock::os::HostExeDirectory();
+        if (exeDir.empty()) {
+            headtracking::OpenLogFile();
+            HT_LOG("[main] BlackMesaHeadTracking %s: Windows reported no folder for bms.exe, so "
+                   "there is no CameraUnlock.ini to read - the mod is dormant, the game is unaffected",
+                   HEADTRACKING_VERSION_STRING);
+            return 0;
+        }
+
+        headtracking::Plugin& plugin = headtracking::GetPlugin();
+        const cameraunlock::config::ConfigLoadResult<headtracking::Config> loaded =
+            plugin.LoadConfig(exeDir + L"\\");
+        if (loaded.config.log_to_file) headtracking::OpenLogFile();
         HT_LOG("[main] BlackMesaHeadTracking %s loaded into pid %lu",
                HEADTRACKING_VERSION_STRING, GetCurrentProcessId());
+        for (const std::string& line : loaded.log) HT_LOG("[config] %s", line.c_str());
+        HT_LOG("[config] CameraUnlock.ini: %s%s%s",
+               cameraunlock::config::ConfigLoadStatusName(loaded.status),
+               loaded.reason.empty() ? "" : " - ", loaded.reason.c_str());
 
-        headtracking::GetPlugin().Initialize();
+        plugin.Initialize();
 
         // Last, because it sleeps until the game has a settled window: nothing
         // above it may wait on this.
@@ -58,7 +76,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID /*reserved*/) {
             // Pin the module before starting the thread that outlives DllMain.
             // Something in the game's startup FreeLibrary's us - the detach
             // arrives with reserved == nullptr (an explicit unload, not process
-            // exit) while the bootstrap thread is still in Config::Load, and the
+            // exit) while the bootstrap thread is still loading the config, and the
             // thread then runs on in freed memory. That is a crash in
             // "BlackMesaHeadTracking.asi_unloaded", usually
             // STATUS_INVALID_EXCEPTION_HANDLER, and it takes the game with it.

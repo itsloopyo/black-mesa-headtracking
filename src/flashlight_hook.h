@@ -6,9 +6,10 @@ namespace headtracking {
 namespace builds { struct BuildProfile; }
 struct AimState;
 
-// Points the player's flashlight along the head-tracked view, leading it by
-// core's kDefaultLightMultiplier, from the eye the frame is drawn from. The
-// weapon's aim is untouched: only the light moves.
+// Points the player's flashlight along the head-tracked view, turned by
+// [Light] LightMultiplier for each degree of head turn, from the eye the frame
+// is drawn from, while [Light] LightFollowsHead is on. The weapon's aim is
+// untouched: only the light moves.
 //
 // Black Mesa's flashlight is its own deferred light, not Source's
 // CFlashlightEffect. C_BasePlayer's flashlight update hands the light renderer
