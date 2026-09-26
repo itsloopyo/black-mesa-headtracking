@@ -40,8 +40,9 @@ clean-all = { cmd = """
 
 # The C++ characterization suite under tests/: the Source camera maths, the
 # config -> PositionSettings mapping, the render-path log schedule and the
-# build-profile dormancy failsafes. `build` produces it, so this runs it rather
-# than rebuilding it a second way.
+# build-profile dormancy failsafes, and the config differential test, which holds
+# the frozen HeadTracking.ini reader to the newest published build's. `build`
+# produces them, so this runs them rather than rebuilding them a second way.
 test-cpp = { cmd = "ctest --test-dir build -C Debug --output-on-failure", depends-on = ["build"] }
 
 # Behaviour lock for the two script modules: ModVersion.psm1, which every version
@@ -67,8 +68,9 @@ update-deps = { cmd = "powershell -ExecutionPolicy Bypass -File scripts/update-d
 # the task exists for a loader copied in by hand.
 strip-loader = { cmd = "powershell -ExecutionPolicy Bypass -File scripts/strip-loader-payload.ps1 -Path vendor/ultimate-asi-loader/dinput8.dll" }
 
-# Package release ZIPs (installer + nexus variants).
-package = { cmd = "powershell -ExecutionPolicy Bypass -File scripts/package-release.ps1", depends-on = ["build-release"] }
+# Package the installer ZIP. Depends on test, so no ZIP is built from a tree whose
+# tests or config differential test fail.
+package = { cmd = "powershell -ExecutionPolicy Bypass -File scripts/package-release.ps1", depends-on = ["build-release", "test"] }
 
 # Cut a release: pixi run release <major|minor|patch|nightly|X.Y.Z>
 release = "powershell -ExecutionPolicy Bypass -File scripts/release.ps1"
@@ -84,3 +86,6 @@ install = { cmd = "powershell -ExecutionPolicy Bypass -File scripts/deploy.ps1 D
 uninstall = "scripts\\uninstall.cmd"
 
 [dependencies]
+# CMake and Visual Studio come from the system. Node runs the manifest and config checks
+# packaging calls at this core pin, pinned to the build cameraunlock-core's own lock resolved.
+nodejs = "==26.5.0"

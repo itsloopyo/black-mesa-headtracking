@@ -4,254 +4,51 @@
 
 #include <Windows.h>
 
-#include <cmath>
 #include <string>
 
 #include "cameraunlock/config/ini_reader.h"
 #include "cameraunlock/os/module_paths.h"
 #include "debug_log.h"
+#include "legacy_config/legacy_config.h"
 
 namespace headtracking {
 
 namespace {
 
-using Reader = cameraunlock::IniReader;
-
-// ----- Key readers ----------------------------------------------------------
-//
-// The INI is a system boundary: every value below is whatever a user typed, so
-// each one is validated here and nothing downstream re-checks it. Reading and
-// sanitizing are one step so a key's default is named once - passing one
-// default to the reader and a different one to the check is exactly the drift
-// this shape prevents.
-
-// Every rejection below says so. A key the reader refuses is a key the player
-// typed and is now not running with, and the three that already logged (Port,
-// Fov, WorldScale) are the three whose silence someone noticed - the rest fail
-// exactly as quietly. The line names the value, the replacement and the key, so
-// "I set a bigger lean and nothing changed" is answered by the log rather than
-// by another round trip.
-//
-// Only the rejection logs. An absent key reads back as its own fallback, which
-// is valid, so the ordinary case stays silent.
-
-float ReadFinite(const Reader& r, const char* section, const char* key, float fallback) {
-    const float value = r.ReadFloat(section, key, fallback);
-    if (std::isfinite(value)) return value;
-    HT_LOG("[config] [%s] %s is not a number - using %.3f", section, key, fallback);
-    return fallback;
-}
-
-// A magnitude - sensitivities and limits. A negative one would scale the axis
-// before the processor's asymmetric Z clamp, which is the one place inversion
-// must never happen: it moves the generous forward allowance onto the backward
-// lean. InvertX/Y/Z is the supported way to flip an axis, applied after the
-// clamp.
-float ReadNonNegative(const Reader& r, const char* section, const char* key, float fallback) {
-    const float value = r.ReadFloat(section, key, fallback);
-    if (std::isfinite(value) && value >= 0.0f) return value;
-    // Every caller is a [Position] magnitude, which is why the inversion hint
-    // belongs on this line.
-    HT_LOG("[config] [%s] %s %.3f is not a distance or a scale - using %.3f. To flip an "
-           "axis use [Position] InvertX/Y/Z.", section, key, value, fallback);
-    return fallback;
-}
-
-float ReadSmoothing(const Reader& r, const char* key, float fallback) {
-    const float value = r.ReadFloat("Smoothing", key, fallback);
-    if (!std::isfinite(value)) {
-        HT_LOG("[config] [Smoothing] %s is not a number - using %.3f", key, fallback);
-        return fallback;
-    }
-    if (value < 0.0f || value > 1.0f) {
-        const float clamped = value < 0.0f ? 0.0f : 1.0f;
-        HT_LOG("[config] [Smoothing] %s %.3f is outside 0 to 1 - using %.3f", key, value,
-               clamped);
-        return clamped;
-    }
-    return value;
-}
-
-float ReadDeadzone(const Reader& r, const char* key) {
-    const float value = r.ReadFloat("Deadzone", key, kDefaultDeadzone);
-    if (std::isfinite(value) && value >= 0.0f) return value;
-    HT_LOG("[config] [Deadzone] %s %.3f is not a positive angle - using 0", key, value);
-    return 0.0f;
-}
-
-// The virtual-key codes Windows actually defines. 0x00 is "no key" and 0xFF is
-// the reserved sentinel GetAsyncKeyState can never report, so neither is a key
-// the poller could ever see pressed.
-constexpr int kMinVirtualKey = 0x01;
-constexpr int kMaxVirtualKey = 0xFE;
-
-// Remapping is allowed to any real virtual key - that is the user's call -
-// except the Ctrl+Shift chord letters, which are already registered.
-int ValidHotkeyOr(int vk, int fallback, const char* name) {
-    for (int letter : hotkeys::kChordLetters) {
-        if (vk == letter) {
-            HT_LOG("[config] hotkey %s (0x%02X) collides with a Ctrl+Shift chord "
-                   "letter - using default 0x%02X", name, vk, fallback);
-            return fallback;
-        }
-    }
-    if (vk < kMinVirtualKey || vk > kMaxVirtualKey) {
-        HT_LOG("[config] hotkey %s (0x%02X) is not a virtual-key code "
-               "- using default 0x%02X", name, vk, fallback);
-        return fallback;
-    }
-    return vk;
-}
-
-float ReadFovOverride(const Reader& r, const char* key) {
-    const float value = r.ReadFloat("View", key, kDefaultFovOverride);
-    if (std::isfinite(value)
-        && (value == 0.0f || (value >= kMinFovOverride && value <= kMaxFovOverride))) {
-        return value;
-    }
-    HT_LOG("[config] [View] %s %.2f is out of range - leaving the game's FOV alone. "
-           "Valid values are %.0f to %.0f (degrees, as fov_desired), or 0 for off.",
-           key, value, kMinFovOverride, kMaxFovOverride);
-    return kDefaultFovOverride;
-}
-
-// Warned once per process rather than once per load: config is reloadable, and
-// repeating this on every reload buries it. The flag is shared across both
-// retired keys on purpose - one line names both replacements.
-//
-// The old value is deliberately NOT migrated into the new keys. The single
-// smoothing value carried a hidden 0.15 floor, so the number in an existing
-// config does not mean what it used to: copying it across would hand a local
-// user smoothing they never chose under the new semantics, and copying it into
-// only one of the two keys would be a guess about which connection they were on.
-void WarnRetiredSmoothingKey(const Reader& reader, const char* section, const char* key) {
-    static bool warned = false;
-    if (warned) return;
-    if (reader.ReadString(section, key, "").empty()) return;
-    warned = true;
-    HT_LOG(
-        "Config key [%s] %s has been retired and is IGNORED. Smoothing is now two "
-        "keys: LocalSmoothing (default 0, applies to a tracker on this machine) and "
-        "RemoteSmoothing (default 0.15, applies to a tracker on the network). The "
-        "old value is not migrated because the semantics changed - it carried a "
-        "hidden 0.15 floor that no longer exists. Set the two new keys.",
-        section, key);
-}
-
-// ----- Section loaders ------------------------------------------------------
-
-// ReadInt yields 0 for a present-but-unparseable value rather than the
-// fallback, so the range check below is what catches a typo too. Logged
-// because this is the one config error whose symptom is "no head tracking at
-// all": the mod binds the default port, the tracker keeps sending to the one
-// in the file, and nothing else in the log says why the packets never arrive.
-uint16_t ReadPort(const Reader& r, const char* key, uint16_t fallback) {
-    const int port = r.ReadInt("Network", key, fallback);
-    if (port < 1 || port > 65535) {
-        HT_LOG("[config] [Network] %s %d is not a valid port - using %u. "
-               "Point your tracker app at %u, or set a port in 1-65535.",
-               key, port, fallback, fallback);
-        return fallback;
-    }
-    return static_cast<uint16_t>(port);
-}
-
-void LoadNetwork(const Reader& r, Config& c) {
-    c.port = ReadPort(r, "Port", kDefaultPort);
-    c.enabled_on_startup = r.ReadBool("Network", "EnableOnStartup", kDefaultEnableOnStartup);
-}
-
-void LoadRotation(const Reader& r, Config& c) {
-    c.sens_yaw   = ReadFinite(r, "Sensitivity", "Yaw",   kDefaultSensitivity);
-    c.sens_pitch = ReadFinite(r, "Sensitivity", "Pitch", kDefaultSensitivity);
-    c.sens_roll  = ReadFinite(r, "Sensitivity", "Roll",  kDefaultSensitivity);
-    c.invert_yaw   = r.ReadBool("Sensitivity", "InvertYaw",   false);
-    c.invert_pitch = r.ReadBool("Sensitivity", "InvertPitch", false);
-    c.invert_roll  = r.ReadBool("Sensitivity", "InvertRoll",  false);
-
-    c.deadzone_yaw   = ReadDeadzone(r, "Yaw");
-    c.deadzone_pitch = ReadDeadzone(r, "Pitch");
-    c.deadzone_roll  = ReadDeadzone(r, "Roll");
-}
-
-void LoadSmoothing(const Reader& r, Config& c) {
-    c.local_smoothing  = ReadSmoothing(r, "LocalSmoothing",  kDefaultLocalSmoothing);
-    c.remote_smoothing = ReadSmoothing(r, "RemoteSmoothing", kDefaultRemoteSmoothing);
-    WarnRetiredSmoothingKey(r, "Smoothing", "Amount");
-    WarnRetiredSmoothingKey(r, "Position", "Smoothing");
-}
-
-void LoadPosition(const Reader& r, Config& c) {
-    c.pos_enabled = r.ReadBool("Position", "Enabled", kDefaultPosEnabled);
-
-    // Zero or negative scale is not "no movement", it is a typo: it silently
-    // kills 6DOF while every other setting still reports healthy. Fall back
-    // loudly. A user wanting tracking off has Enabled and the mode hotkey.
-    c.pos_world_scale = ReadFinite(r, "Position", "WorldScale", kDefaultPosWorldScale);
-    if (c.pos_world_scale <= 0.0f) {
-        HT_LOG("[config] WorldScale must be positive (got %.3f) - using %.2f. "
-               "To flip an axis use [Position] InvertX/Y/Z.",
-               c.pos_world_scale, kDefaultPosWorldScale);
-        c.pos_world_scale = kDefaultPosWorldScale;
-    }
-
-    c.pos_sens_x = ReadNonNegative(r, "Position", "SensX", kDefaultPosSensitivity);
-    c.pos_sens_y = ReadNonNegative(r, "Position", "SensY", kDefaultPosSensitivity);
-    c.pos_sens_z = ReadNonNegative(r, "Position", "SensZ", kDefaultPosSensitivity);
-    c.pos_invert_x = r.ReadBool("Position", "InvertX", false);
-    c.pos_invert_y = r.ReadBool("Position", "InvertY", false);
-    c.pos_invert_z = r.ReadBool("Position", "InvertZ", false);
-
-    c.pos_limit_x      = ReadNonNegative(r, "Position", "LimitX", kDefaultPosLimitX);
-    c.pos_limit_y      = ReadNonNegative(r, "Position", "LimitY", kDefaultPosLimitY);
-    c.pos_limit_z      = ReadNonNegative(r, "Position", "LimitZ", kDefaultPosLimitZ);
-    c.pos_limit_z_back = ReadNonNegative(r, "Position", "LimitZBack", kDefaultPosLimitZBack);
-}
-
-// Two actions on one key is the [Hotkeys] mistake ValidHotkeyOr cannot catch:
-// each binding on its own is a real virtual key, and the poller edge-detects
-// the toggle key and every added hotkey separately, so one press fires both
-// callbacks. What the player sees is not "my keys collide" - bind Toggle onto
-// ModeCycle's Page Up and cycling the tracking mode switches tracking off at
-// the same time - so the collision is named in the log they are asked to
-// attach rather than left to be inferred.
-//
-// Named, not remapped: both codes are legal keys and which one the user meant
-// is not ours to guess, and a fallback would land on another action's default
-// as often as not.
-void WarnDuplicateHotkeys(const Config& c) {
-    const struct Binding {
-        int vk;
-        const char* name;
-    } bound[] = {
-        { c.toggle_vk,     "Toggle" },
-        { c.yaw_mode_vk,   "YawMode" },
-        { c.mode_cycle_vk, "ModeCycle" },
-    };
-    constexpr size_t kCount = sizeof(bound) / sizeof(bound[0]);
-    for (size_t i = 0; i < kCount; ++i) {
-        for (size_t j = i + 1; j < kCount; ++j) {
-            if (bound[i].vk != bound[j].vk) continue;
-            HT_LOG("[config] hotkeys %s and %s are both bound to 0x%02X - one press fires "
-                   "both actions; give them different keys in [Hotkeys]",
-                   bound[i].name, bound[j].name, bound[i].vk);
-        }
-    }
-}
-
-void LoadHotkeys(const Reader& r, Config& c) {
-    c.toggle_vk = ValidHotkeyOr(r.ReadHex("Hotkeys", "Toggle", hotkeys::kVkEnd),
-                                hotkeys::kVkEnd, "Toggle");
-    c.yaw_mode_vk = ValidHotkeyOr(r.ReadHex("Hotkeys", "YawMode", hotkeys::kVkPageDown),
-                                  hotkeys::kVkPageDown, "YawMode");
-    c.mode_cycle_vk = ValidHotkeyOr(r.ReadHex("Hotkeys", "ModeCycle", hotkeys::kVkPageUp),
-                                    hotkeys::kVkPageUp, "ModeCycle");
-    WarnDuplicateHotkeys(c);
-}
-
-void LoadView(const Reader& r, Config& c) {
-    c.world_space_yaw = r.ReadBool("View", "WorldSpaceYaw", kDefaultWorldSpaceYaw);
-    c.fov_override = ReadFovOverride(r, "Fov");
+// Every value was validated by the reader, so the fields copy across as they are.
+Config FromLegacy(const legacy::Config& l) {
+    Config c;
+    c.port = l.port;
+    c.enabled_on_startup = l.enabled_on_startup;
+    c.sens_yaw = l.sens_yaw;
+    c.sens_pitch = l.sens_pitch;
+    c.sens_roll = l.sens_roll;
+    c.invert_yaw = l.invert_yaw;
+    c.invert_pitch = l.invert_pitch;
+    c.invert_roll = l.invert_roll;
+    c.local_smoothing = l.local_smoothing;
+    c.remote_smoothing = l.remote_smoothing;
+    c.deadzone_yaw = l.deadzone_yaw;
+    c.deadzone_pitch = l.deadzone_pitch;
+    c.deadzone_roll = l.deadzone_roll;
+    c.pos_enabled = l.pos_enabled;
+    c.pos_sens_x = l.pos_sens_x;
+    c.pos_sens_y = l.pos_sens_y;
+    c.pos_sens_z = l.pos_sens_z;
+    c.pos_invert_x = l.pos_invert_x;
+    c.pos_invert_y = l.pos_invert_y;
+    c.pos_invert_z = l.pos_invert_z;
+    c.pos_limit_x = l.pos_limit_x;
+    c.pos_limit_y = l.pos_limit_y;
+    c.pos_limit_z = l.pos_limit_z;
+    c.pos_limit_z_back = l.pos_limit_z_back;
+    c.pos_world_scale = l.pos_world_scale;
+    c.toggle_vk = l.toggle_vk;
+    c.yaw_mode_vk = l.yaw_mode_vk;
+    c.mode_cycle_vk = l.mode_cycle_vk;
+    c.world_space_yaw = l.world_space_yaw;
+    c.fov_override = l.fov_override;
+    return c;
 }
 
 // ----- Writing the default ini ---------------------------------------------
@@ -411,20 +208,11 @@ Config Config::LoadOrCreateDefault() {
     // defaults with no file the user can edit.
     if (!FileExists(path)) WriteDefaultIni(path);
 
-    cameraunlock::IniReader r;
-    Config c;
-    if (!r.Open(path)) {
+    legacy::Config read;
+    if (legacy::Read(path.c_str(), read) == legacy::ReadStatus::Absent) {
         HT_LOG("[config] could not open %s, using defaults", path.c_str());
-        return c;
     }
-
-    LoadNetwork(r, c);
-    LoadRotation(r, c);
-    LoadSmoothing(r, c);
-    LoadPosition(r, c);
-    LoadHotkeys(r, c);
-    LoadView(r, c);
-    return c;
+    return FromLegacy(read);
 }
 
 }  // namespace headtracking
