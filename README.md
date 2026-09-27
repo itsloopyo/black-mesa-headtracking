@@ -8,7 +8,6 @@ An unofficial head tracking mod for Black Mesa that moves the view with your hea
 
 - **Decoupled look and aim** - head tracking moves the camera; aim stays on your mouse or controller
 - **6DOF positional tracking** - lean, peek and duck with head position
-- **Flashlight follows your head** - the flashlight turns with your head rather than your aim, by 1.5 times the head turn. `LightMultiplier` sets how far; `LightFollowsHead=false` leaves the beam on your aim.
 - **Works with any OpenTrack compatible tracker** - free options available for PC, iOS and Android
 
 ## Requirements
@@ -346,13 +345,13 @@ is in force. Attach it to a bug report.
 
 ## Updating
 
-Download the new release and run `install.cmd` again. Your settings in `CameraUnlock.ini` are kept, and the installer does not touch `HeadTracking.ini`.
+Download the new release and run `install.cmd` again. Your settings in `CameraUnlock.ini` are kept.
 
 ## Uninstalling
 
 Run `uninstall.cmd`. This removes the mod DLL and the two log files from the
-game root, and leaves `CameraUnlock.ini` and `HeadTracking.ini` in place, so a
-reinstall keeps your settings. The mod loader (Ultimate ASI Loader) is only
+game root, and leaves `CameraUnlock.ini` in place, so a reinstall keeps your
+settings. The mod loader (Ultimate ASI Loader) is only
 removed if the installer put it there. Use `uninstall.cmd /force` to remove it
 anyway.
 
