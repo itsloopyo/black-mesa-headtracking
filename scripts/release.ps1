@@ -128,6 +128,7 @@ try {
     exit 1
 }
 
+Assert-ReleaseNotBelowCanonicalSince -RepoRoot $projectDir -Version $Version
 $tag = "v$Version"
 
 $branch = git rev-parse --abbrev-ref HEAD
