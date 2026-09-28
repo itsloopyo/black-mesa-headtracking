@@ -25,6 +25,24 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference    = 'SilentlyContinue'
 
+# Not Get-FileHash: Windows PowerShell 5.1 autoloads it from a script module,
+# and a powershell.exe started from pwsh (GitHub Actions' shell: pwsh)
+# inherits pwsh's PSModulePath, resolves the Core-only
+# Microsoft.PowerShell.Utility first and reports the cmdlet as not recognized.
+function Get-Sha256Hex {
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string]$LiteralPath)
+
+    $sha    = [System.Security.Cryptography.SHA256]::Create()
+    $stream = [System.IO.File]::OpenRead((Convert-Path -LiteralPath $LiteralPath))
+    try {
+        return [BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $stream.Dispose()
+        $sha.Dispose()
+    }
+}
+
 $scriptDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectDir = Split-Path -Parent $scriptDir
 
@@ -72,7 +90,7 @@ try {
         $archive.Dispose()
     }
 
-    $upstreamSha = (Get-FileHash -LiteralPath $stagedDll -Algorithm SHA256).Hash.ToLower()
+    $upstreamSha = Get-Sha256Hex -LiteralPath $stagedDll
 
     # The upstream x86 build carries binkw32.dll (RAD Game Tools, proprietary),
     # wndmode.dll (VEG / menopem, no licence) and vorbisfile.dll (Xiph.Org) as
@@ -84,13 +102,13 @@ try {
     & $strip -Path $stagedDll
     & $strip -Path $stagedDll -VerifyOnly   # throws if anything survived
 
-    $dllSha = (Get-FileHash -LiteralPath $stagedDll -Algorithm SHA256).Hash.ToLower()
+    $dllSha = Get-Sha256Hex -LiteralPath $stagedDll
 
     # Idempotency: an unchanged upstream must leave the tree clean. Rewriting
     # README.md unconditionally would churn its fetched_at on every run and
     # produce a commit that says nothing.
     $unchanged = (Test-Path $vendorDll) -and (Test-Path $readmePath) -and (Test-Path $licensePath) -and
-        ((Get-FileHash -LiteralPath $vendorDll -Algorithm SHA256).Hash.ToLower() -eq $dllSha)
+        ((Get-Sha256Hex -LiteralPath $vendorDll) -eq $dllSha)
 
     if ($unchanged) {
         Write-Host "    no change (dinput8.dll sha256=$($dllSha.Substring(0,12))... matches on-disk vendor copy)" -ForegroundColor DarkGray
