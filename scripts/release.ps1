@@ -79,25 +79,6 @@ function Sync-CoreNotices {
     }
 }
 
-# Mirrors New-ChangelogFromCommits' insertion so a -Force maintenance entry
-# lands in the same place with the same shape.
-function Add-MaintenanceChangelogEntry {
-    param([string]$Path, [string]$NewVersion)
-    $date = Get-Date -Format 'yyyy-MM-dd'
-    $entry = "## [$NewVersion] - $date`n`n### Changed`n`n- Maintenance release (no user-facing changes).`n`n"
-    # -Encoding UTF8 / WriteAllText, matching New-ChangelogFromCommits: on
-    # PS 5.1 Get-Content and Set-Content both default to the ANSI codepage, so
-    # the pair would mangle every non-ASCII character already in the changelog.
-    $changelog = Get-Content $Path -Raw -Encoding UTF8
-    if ($changelog -match '(?s)(# Changelog.*?)(## \[)') {
-        $changelog = $changelog -replace '(?s)(# Changelog.*?\n\n)', "`$1$entry"
-    } else {
-        $changelog = $changelog -replace '(?s)(# Changelog.*?\n)', "`$1$entry"
-    }
-    $changelog = $changelog.TrimEnd() + "`n"
-    [System.IO.File]::WriteAllText($Path, $changelog, (New-Object System.Text.UTF8Encoding $false))
-}
-
 Write-Host ''
 Write-Host '=== Black Mesa Head Tracking Release ===' -ForegroundColor Cyan
 Write-Host ''
@@ -156,30 +137,18 @@ Write-Host ''
 # before mutating any version file means an abort leaves the tree clean rather
 # than stranding a half-applied bump with no tag.
 Write-Host 'Generating CHANGELOG from commits...' -ForegroundColor Cyan
-$hasTags = git tag -l 2>$null
-if (-not $hasTags) {
-    $date = Get-Date -Format 'yyyy-MM-dd'
-    # WriteAllText with a BOM-less UTF8 encoder, for the reason spelled out in
-    # Add-MaintenanceChangelogEntry: PS 5.1's Set-Content defaults to the ANSI
-    # codepage, and the next release reads this file back with -Encoding UTF8.
-    [System.IO.File]::WriteAllText($changelogPath,
-        "# Changelog`n`n## [$Version] - $date`n`nFirst release.`n",
-        (New-Object System.Text.UTF8Encoding $false))
-} else {
-    try {
-        # Same pathspecs release.yml passes to generate-release-notes.ps1, so
-        # the changelog and the GitHub release notes cover the same commits.
-        New-ChangelogFromCommits -ChangelogPath $changelogPath -Version $Version `
-            -ArtifactPaths @('src/', 'cameraunlock-core', 'scripts/install.cmd', 'scripts/uninstall.cmd', 'launcher-manifest.json')
-    } catch {
-        if (-not $Force) {
-            Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
-            Write-Host 'No user-facing changes to release. Re-run with -Force for a maintenance release.' -ForegroundColor Yellow
-            exit 1
-        }
-        Write-Host 'No user-facing commits since last tag - writing maintenance entry (-Force).' -ForegroundColor Yellow
-        Add-MaintenanceChangelogEntry -Path $changelogPath -NewVersion $Version
+try {
+    # Same pathspecs release.yml passes to generate-release-notes.ps1, so
+    # the changelog and the GitHub release notes cover the same commits.
+    New-ChangelogFromCommits -ChangelogPath $changelogPath -Version $Version `
+        -ArtifactPaths @('src/', 'cameraunlock-core', 'scripts/install.cmd', 'scripts/uninstall.cmd', 'launcher-manifest.json') `
+        -Maintenance:$Force
+} catch {
+    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+    if (-not $Force) {
+        Write-Host 'No user-facing changes to release. Re-run with -Force for a maintenance release.' -ForegroundColor Yellow
     }
+    exit 1
 }
 
 # Step 2 - src/version.h is the canonical version: the packager reads it to name
