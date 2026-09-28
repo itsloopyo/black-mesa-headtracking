@@ -40,23 +40,29 @@ clean-all = { cmd = """
 
 # The C++ characterization suite under tests/: the Source camera maths, the
 # config -> PositionSettings mapping, the render-path log schedule and the
-# build-profile dormancy failsafes, and the config differential test, which holds
-# the frozen HeadTracking.ini reader to the newest published build's. `build`
-# produces them, so this runs them rather than rebuilding them a second way.
-test-cpp = { cmd = "ctest --test-dir build -C Debug --output-on-failure", depends-on = ["build"] }
+# build-profile dormancy failsafes. `build` produces them, so this runs them
+# rather than rebuilding them a second way.
+test-cpp = { cmd = "ctest --test-dir build -C Debug --output-on-failure -LE differential", depends-on = ["build"] }
+
+# The config differential test, which holds the frozen HeadTracking.ini reader to
+# the newest published build's, and core's config lint over what it migrated. The
+# release paths run it; package does not.
+test-differential = { cmd = "ctest --test-dir build -C Debug --output-on-failure --no-tests=error -L differential", depends-on = ["build"] }
 
 # Behaviour lock for the two script modules: ModVersion.psm1, which every version
 # read and write in this repo goes through, and PackageGuards.psm1, which decides
 # what a release ZIP is allowed to carry. No Pester: matches
 # cameraunlock-core/powershell/tests.
 #
-# Depends on test-cpp so `pixi run test` is the whole gate. The C++ suite was
-# compiled by every build and run by nothing, which is how a characterization
-# test quietly stops characterizing anything.
-test = { cmd = """
+# Depends on test-cpp so `pixi run test-unit` is the whole fast gate. The C++
+# suite was compiled by every build and run by nothing, which is how a
+# characterization test quietly stops characterizing anything.
+test-unit = { cmd = """
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts/tests/ModVersion.Tests.ps1 &&
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts/tests/PackageGuards.Tests.ps1
 """, depends-on = ["test-cpp"] }
+
+test = { depends-on = ["test-unit", "test-differential"] }
 
 # Bump the vendored Ultimate ASI Loader. Manual; review and commit the diff.
 # No build/package/release task depends on this, and CI never runs it - the
@@ -78,9 +84,9 @@ render-config = { cmd = "build/tests/Debug/bms_config_tests.exe --render-config 
 # after package.
 validate-manifest = "node cameraunlock-core/scripts/validate-manifest.mjs"
 
-# Package the installer ZIP. Depends on test, so no ZIP is built from a tree whose
-# tests or config differential test fail.
-package = { cmd = "powershell -ExecutionPolicy Bypass -File scripts/package-release.ps1", depends-on = ["build-release", "test"] }
+# Package the installer ZIP. Depends on test-unit, so no ZIP is built from a tree
+# whose unit tests fail.
+package = { cmd = "powershell -ExecutionPolicy Bypass -File scripts/package-release.ps1", depends-on = ["build-release", "test-unit"] }
 
 # Cut a release: pixi run release <major|minor|patch|nightly|X.Y.Z>
 release = "powershell -ExecutionPolicy Bypass -File scripts/release.ps1"

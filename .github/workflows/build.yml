@@ -14,13 +14,12 @@ on:
       - 'docs/**'
       - 'LICENSE'
 
-# Read-only token. This job runs on every branch push and on pull requests, so
-# it is the widest-reach workflow in the repo; it only needs to read the repo
-# (checkout + submodule). Without the block the job inherits whatever the
-# repository default is, which is write on repos created before the default
-# changed.
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:

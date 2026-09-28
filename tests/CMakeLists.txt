@@ -94,3 +94,4 @@ add_test(NAME bms_config_lint COMMAND node
     ${CMAKE_CURRENT_SOURCE_DIR}/config_differential/lint-migrated.mjs
     $<TARGET_FILE_DIR:bms_config_differential_tests>/migrated)
 set_tests_properties(bms_config_lint PROPERTIES DEPENDS bms_config_differential_tests)
+set_tests_properties(bms_config_differential_tests bms_config_lint PROPERTIES LABELS differential)
