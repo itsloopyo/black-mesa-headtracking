@@ -18,8 +18,9 @@
 // reader was frozen at, and every core source either reader compiles holds the same bytes at
 // e6ce21d and at the pin, which SourcesAreThePinnedOnes checks.
 //
-// Comparison 2, import against migration, is the proof for the conversion. It allows the one
-// approved change core's data/config-format.json records that applies here, and nothing else:
+// Comparison 2, import against migration, is the proof for the conversion. It allows the
+// approved changes and normalisations core's data/config-format.json records that apply here,
+// and nothing else:
 //
 //   pose_shaping  a sensitivity, inversion, deadzone or WorldScale the player set away from the
 //                 shipped value is dropped, and the session runs at the shipped value, which the
@@ -29,11 +30,12 @@
 //                 the frozen reader accepts, is unbound and logged, and the action keeps its
 //                 Ctrl+Shift chord.
 //
+//   N4            a [Position] limit above the canonical rows' 10 metres, which the frozen reader
+//                 takes with no upper bound, imports as 10 and is logged, and the row is carried
+//                 as the player's.
+//
 // The reader replaces a float that is not finite, clamps the smoothing pair into 0 to 1, and
-// keeps every hotkey code inside 0x01-0xFE, so neither N1 nor N2 can apply. It reads the
-// four limits with no upper bound, and the canonical rows take 0 to 10 metres; core has no rule
-// for a value outside a concept's range, so the owner defers such a file, the session runs on
-// what the import read, and nothing is created or saved (kUnrepresentable).
+// keeps every hotkey code inside 0x01-0xFE, so neither N1 nor N2 can apply.
 //
 // LightFollowsHead and LightMultiplier are new rows. v0.1.1 always turned the flashlight with
 // the head at core's kDefaultLightMultiplier, which is what both rows default to, so every input
@@ -575,6 +577,9 @@ Observed ObserveCanonical(const headtracking::Config& c) {
 
 using Drop = std::tuple<cfg::DropRule, std::string, std::string>;
 
+// The canonical position limits take 0 to 10 metres.
+constexpr float kMaxLimit = 10.0f;
+
 // The drops the approved changes call for, from what the frozen reader read, and the settings
 // the session then runs on: comparison 2's whole allowance.
 struct Allowed {
@@ -612,6 +617,17 @@ Allowed ApplyApprovedChanges(const headtracking::legacy::Config& read) {
     o.scale_x = o.scale_y = o.scale_z = 39.37f;
     // N3: a Ctrl, Shift or Alt code loses its plain binding, and the chord stays.
     const auto modifier = [](int vk) { return (vk >= 0x10 && vk <= 0x12) || (vk >= 0xA0 && vk <= 0xA5); };
+    // N4: a limit above the rows' 10 metres runs as 10.
+    const std::tuple<float, float*, const char*> limits[] = {{read.pos_limit_x, &o.limit_x, "LimitX"},
+                                                             {read.pos_limit_y, &o.limit_y, "LimitY"},
+                                                             {read.pos_limit_z, &o.limit_z, "LimitZ"},
+                                                             {read.pos_limit_z_back, &o.limit_z_back, "LimitZBack"}};
+    for (const auto& [value, field, key] : limits) {
+        if (value <= kMaxLimit) continue;
+        a.dropped.push_back({cfg::DropRule::NumberOutOfRange, "Position", key});
+        *field = kMaxLimit;
+    }
+    o.limit_y_down = o.limit_y;
     const std::tuple<int, int, const char*> codes[] = {
         {kToggle, read.toggle_vk, "Toggle"}, {kCycleMode, read.mode_cycle_vk, "ModeCycle"}, {kYawMode, read.yaw_mode_vk, "YawMode"}};
     for (const auto& [action, vk, key] : codes) {
@@ -715,17 +731,6 @@ Observed OverDefaults(Observed want, const std::set<Concept>& follows, const Obs
     return want;
 }
 
-// v0.1.1 read the four [Position] limits with no upper bound, and the canonical rows take 0 to 10
-// metres.
-constexpr const char* kUnrepresentable =
-    "[Position] LimitX, LimitY, LimitZ or LimitZBack above 10, which the canonical rows cannot hold, so the "
-    "import defers";
-
-bool Unrepresentable(const headtracking::legacy::Config& read) {
-    return read.pos_limit_x > 10.0f || read.pos_limit_y > 10.0f || read.pos_limit_z > 10.0f ||
-           read.pos_limit_z_back > 10.0f;
-}
-
 std::vector<std::string> CanonicalDiagnostics(const std::string& bytes, headtracking::Config& out) {
     std::vector<std::string> found;
     const cfg::CanonicalIni doc = cfg::ParseCanonicalIni(bytes);
@@ -808,7 +813,7 @@ fs::path MigratedFolder() {
 // Runs the owner's Load in `s`, whose game folder holds the input as HeadTracking.ini or
 // nothing, checks what a load must do beyond comparison 2, and returns the settings the session
 // runs on. A file it creates by migrating goes into `migrated_files`.
-headtracking::Config Migrate(const Input& input, const Scratch& s, const std::string& label, bool deferred,
+headtracking::Config Migrate(const Input& input, const Scratch& s, const std::string& label,
                              std::set<std::string>& migrated_files) {
     const fs::path legacy = fs::path(s.wini());
     const std::optional<FileState> legacy_before = StateOf(legacy);
@@ -817,16 +822,6 @@ headtracking::Config Migrate(const Input& input, const Scratch& s, const std::st
     const cfg::ConfigLoadResult<headtracking::Config> loaded =
         cfg::ConfigOwner<headtracking::Config>(s.Options()).Load();
     Check(StateOf(legacy) == legacy_before, label + ": a load leaves HeadTracking.ini's bytes, write time and attributes");
-
-    if (deferred) {
-        Check(loaded.status == cfg::ConfigLoadStatus::Deferred,
-              label + ": " + kUnrepresentable + ", but the load is " + cfg::ConfigLoadStatusName(loaded.status));
-        Check(s.Names() == std::set<std::string>{"HeadTracking.ini"},
-              label + ": a deferred import leaves HeadTracking.ini alone in the game folder");
-        Check(loaded.reason.find("cannot be converted") != std::string::npos,
-              label + ": the player is told which value stops the import: " + loaded.reason);
-        return loaded.config;
-    }
 
     const cfg::ConfigLoadStatus want = input.present ? cfg::ConfigLoadStatus::Migrated : cfg::ConfigLoadStatus::Created;
     if (loaded.status != want) {
@@ -872,7 +867,7 @@ void ImportAgainstMigration(const std::vector<Input>& inputs) {
           "the skewed Defaults.ini differs from the built-in values on every row");
     std::set<std::string> migrated_files;
     int compared = 0;
-    int deferred_inputs = 0;
+    int clamped_inputs = 0;
     int touched = 0;
     int mode_touched = 0;
     for (const Input& input : inputs) {
@@ -923,8 +918,11 @@ void ImportAgainstMigration(const std::vector<Input>& inputs) {
         const bool unedited = name == "v0.1.1 first-run file" || name == "empty file" || name == "no file";
         if (unedited) Check(untouched == AllRows(), name + ": every row follows Defaults.ini");
 
-        const bool deferred = input.present && Unrepresentable(read);
-        if (deferred) ++deferred_inputs;
+        if (std::any_of(allowed.dropped.begin(), allowed.dropped.end(),
+                        [](const Drop& d) { return std::get<0>(d) == cfg::DropRule::NumberOutOfRange; })) {
+            ++clamped_inputs;
+            Check(input.present, name + ": a limit is clamped with no file");
+        }
 
         const auto compare = [&](const headtracking::Config& got, const std::string& label) {
             const std::vector<std::string> diff = Differences(want, ObserveCanonical(got));
@@ -932,19 +930,16 @@ void ImportAgainstMigration(const std::vector<Input>& inputs) {
             Check(diff.empty(), "comparison 2: the session runs as the import read, less the approved changes: " + label);
         };
 
-        // Over a Defaults.ini the owner creates with the built-in values. Imported or deferred,
-        // the session runs on the settings the load hands back.
+        // Over a Defaults.ini the owner creates with the built-in values.
         {
             Scratch s;
             if (input.present) s.Write(input.bytes);
-            const headtracking::Config migrated = Migrate(input, s, name, deferred, migrated_files);
+            const headtracking::Config migrated = Migrate(input, s, name, migrated_files);
             compare(migrated, name);
-            if (!deferred) {
-                headtracking::Config reread;
-                CanonicalDiagnostics(ReadFileBytes(s.canonical()), reread);
-                Check(Differences(ObserveCanonical(reread), ObserveCanonical(migrated)).empty(),
-                      name + ": CameraUnlock.ini reads back as the settings the session runs on");
-            }
+            headtracking::Config reread;
+            CanonicalDiagnostics(ReadFileBytes(s.canonical()), reread);
+            Check(Differences(ObserveCanonical(reread), ObserveCanonical(migrated)).empty(),
+                  name + ": CameraUnlock.ini reads back as the settings the session runs on");
 
             // Fresh equals upgrade: the published build's first-run file, an empty file and no
             // file at all end as the committed file, `default` on every row.
@@ -958,7 +953,7 @@ void ImportAgainstMigration(const std::vector<Input>& inputs) {
             Scratch ro;
             ro.Write(input.bytes);
             SetFileAttributesA(ro.ini().c_str(), FILE_ATTRIBUTE_READONLY);
-            compare(Migrate(input, ro, name + " (read-only)", deferred, migrated_files), name + " (read-only)");
+            compare(Migrate(input, ro, name + " (read-only)", migrated_files), name + " (read-only)");
             Check((GetFileAttributesA(ro.ini().c_str()) & FILE_ATTRIBUTE_READONLY) != 0,
                   name + ": HeadTracking.ini keeps its read-only attribute");
         }
@@ -971,25 +966,23 @@ void ImportAgainstMigration(const std::vector<Input>& inputs) {
             skewed.Write(input.bytes);
             skewed.WriteDefaults(kSkewedDefaults);
             const std::string label = name + " (skewed Defaults.ini)";
-            const headtracking::Config got = Migrate(input, skewed, label, deferred, migrated_files);
+            const headtracking::Config got = Migrate(input, skewed, label, migrated_files);
             const std::vector<std::string> diff =
                 Differences(OverDefaults(want, follows, skewed_observed), ObserveCanonical(got));
             for (const std::string& d : diff) std::printf("  comparison 2, %s: %s\n", label.c_str(), d.c_str());
             Check(diff.empty(), label + ": the untouched rows take Defaults.ini's values and the changed rows keep the import's");
-            if (!deferred) {
-                const std::string migrated = ReadFileBytes(skewed.canonical());
-                for (const Concept id : follows) {
-                    const std::string key = cfg::schema::kConcepts[static_cast<std::size_t>(id)].key;
-                    Check(migrated.find("\r\n" + key + "=default\r\n") != std::string::npos,
-                          label + ": " + key + " is written default");
-                }
+            const std::string migrated = ReadFileBytes(skewed.canonical());
+            for (const Concept id : follows) {
+                const std::string key = cfg::schema::kConcepts[static_cast<std::size_t>(id)].key;
+                Check(migrated.find("\r\n" + key + "=default\r\n") != std::string::npos,
+                      label + ": " + key + " is written default");
             }
         }
         ++compared;
     }
-    std::printf("comparison 2: %d inputs, %d deferred (%s)\n", compared, deferred_inputs, kUnrepresentable);
+    std::printf("comparison 2: %d inputs, %d with a limit above 10 clamped (N4)\n", compared, clamped_inputs);
     std::printf("%d inputs changed a row from v0.1.1's default, %d of them the tracking mode\n", touched, mode_touched);
-    Check(deferred_inputs > 0, "the corpus reaches a limit the canonical rows cannot hold");
+    Check(clamped_inputs > 0, "the corpus reaches a limit above the canonical rows' 10");
     Check(touched > 0 && mode_touched > 0,
           "the inputs change rows, the tracking mode among them, which then do not follow Defaults.ini");
 

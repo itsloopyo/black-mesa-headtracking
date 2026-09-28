@@ -19,10 +19,12 @@ namespace {
 
 using cameraunlock::config::DroppedValue;
 using cameraunlock::config::ImportResult;
+using cameraunlock::config::LegacyClampToRange;
 using cameraunlock::config::LegacyInput;
 using cameraunlock::config::LegacyKey;
 using cameraunlock::config::LegacyPoseShaping;
 using cameraunlock::config::PoseShapingValue;
+using cameraunlock::config::schema::Concept;
 using cameraunlock::input::KeyModifiers;
 
 // A legacy hotkey code and the Ctrl+Shift chord v0.1.1 always registered beside it, as one key
@@ -65,12 +67,18 @@ ImportResult Import(const LegacyInput& input, Config& out) {
     out.remote_smoothing = c.remote_smoothing;
     out.position.remote_smoothing = c.remote_smoothing;
 
-    // The old file had one vertical limit, which the old runtime applied both ways.
-    out.position.limit_x = c.pos_limit_x;
-    out.position.limit_y = c.pos_limit_y;
-    out.position.limit_y_down = c.pos_limit_y;
-    out.position.limit_z = c.pos_limit_z;
-    out.position.limit_z_back = c.pos_limit_z_back;
+    // The old file had one vertical limit, which the old runtime applied both ways. The reader
+    // took any finite limit from 0 up, and one above the rows' 10 imports as 10 (N4).
+    using LimitY = cameraunlock::config::schema::ConceptTraits<Concept::PositionLimitY>;
+    using LimitYDown = cameraunlock::config::schema::ConceptTraits<Concept::PositionLimitYDown>;
+    static_assert(LimitY::kMin == LimitYDown::kMin && LimitY::kMax == LimitYDown::kMax,
+                  "LimitY fills both vertical rows, so they take one range");
+    out.position.limit_x = LegacyClampToRange<Concept::PositionLimitX>(c.pos_limit_x, "Position", "LimitX", dropped);
+    out.position.limit_y = LegacyClampToRange<Concept::PositionLimitY>(c.pos_limit_y, "Position", "LimitY", dropped);
+    out.position.limit_y_down = out.position.limit_y;
+    out.position.limit_z = LegacyClampToRange<Concept::PositionLimitZ>(c.pos_limit_z, "Position", "LimitZ", dropped);
+    out.position.limit_z_back =
+        LegacyClampToRange<Concept::PositionLimitZBack>(c.pos_limit_z_back, "Position", "LimitZBack", dropped);
 
     out.fov_override = c.fov_override;
     out.log_to_file = c.log_to_file;
@@ -100,8 +108,8 @@ ImportResult Import(const LegacyInput& input, Config& out) {
     out.yaw_mode_key_name = KeyList(c.yaw_mode_vk, 'H', "YawMode", dropped);
 
     // A setting the player never changed from what v0.1.1 shipped follows Defaults.ini. LimitY
-    // stood for both vertical bounds, and each hotkey's chord was fixed, so its code decides.
-    using cameraunlock::config::schema::Concept;
+    // stood for both vertical bounds, and each hotkey's chord was fixed, so its code decides. A
+    // limit is compared as read, so one N4 clamped is the player's.
     const legacy::Config shipped;
     cameraunlock::config::LegacyFollowsDefaultsIni follows;
     follows.Setting(Concept::UdpPort, c.port, shipped.port);
