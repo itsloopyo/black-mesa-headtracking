@@ -21,6 +21,9 @@ namespace {
 // log is opened, since [Debug] LogToFile decides whether there is one; the
 // owner hands its lines back and they are written once the log is up.
 DWORD WINAPI BootstrapThread(LPVOID) {
+    // Until the config has loaded there is no LogToFile to honour, so a failure
+    // before then opens the log to say why the mod is dormant.
+    bool configLoaded = false;
     try {
         // bms.exe's folder, where HeadTracking.ini has always been and CameraUnlock.ini goes.
         const std::wstring exeDir = cameraunlock::os::HostExeDirectory();
@@ -35,6 +38,7 @@ DWORD WINAPI BootstrapThread(LPVOID) {
         headtracking::Plugin& plugin = headtracking::GetPlugin();
         const cameraunlock::config::ConfigLoadResult<headtracking::Config> loaded =
             plugin.LoadConfig(exeDir + L"\\");
+        configLoaded = true;
         if (loaded.config.log_to_file) headtracking::OpenLogFile();
         HT_LOG("[main] BlackMesaHeadTracking %s loaded into pid %lu",
                HEADTRACKING_VERSION_STRING, GetCurrentProcessId());
@@ -49,9 +53,11 @@ DWORD WINAPI BootstrapThread(LPVOID) {
         // above it may wait on this.
         headtracking::CenterWindowWhenReady();
     } catch (const std::exception& e) {
+        if (!configLoaded) headtracking::OpenLogFile();
         HT_LOG("[main] startup failed (%s) - the mod is dormant, the game is unaffected",
                e.what());
     } catch (...) {
+        if (!configLoaded) headtracking::OpenLogFile();
         HT_LOG("[main] startup failed - the mod is dormant, the game is unaffected");
     }
     return 0;
