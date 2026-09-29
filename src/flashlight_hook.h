@@ -8,8 +8,8 @@ struct AimState;
 
 // Points the player's flashlight along the head-tracked view, turned by
 // [Light] LightMultiplier for each degree of head turn, from the eye the frame
-// is drawn from, while [Light] LightFollowsHead is on. The weapon's aim is
-// untouched: only the light moves.
+// is drawn from. LightMultiplier=0 keeps the beam on the aim. The weapon's aim
+// is untouched: only the light moves.
 //
 // Black Mesa's flashlight is its own deferred light, not Source's
 // CFlashlightEffect. C_BasePlayer's flashlight update hands the light renderer

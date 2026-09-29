@@ -13,10 +13,8 @@ namespace headtracking {
 void TrackerFeed::Start(const Config& config) {
     m_port = static_cast<uint16_t>(config.udp_port);
     // The table reads a pair that names no mode as its defaults, so the pair always decodes.
-    const cameraunlock::TrackingMode mode =
-        cameraunlock::DecodeTrackingMode(config.rotation_enabled, config.position_enabled).value();
-    m_session.SetMode(mode);
-    m_desiredMode.store(static_cast<int>(mode));
+    m_session.SetMode(
+        cameraunlock::DecodeTrackingMode(config.rotation_enabled, config.position_enabled).value());
 
     m_session.SetLocalSmoothing(config.local_smoothing);
     m_session.SetRemoteSmoothing(config.remote_smoothing);
@@ -59,17 +57,10 @@ void TrackerFeed::Invalidate() {
     m_cachedPosValid.store(false, std::memory_order_release);
 }
 
-// From the applied mode, not the desired one, so two presses before the render
-// thread has run step the cycle once.
-cameraunlock::TrackingMode TrackerFeed::CycleMode() {
-    const int next = (static_cast<int>(m_session.GetMode()) + 1) % 3;
-    m_desiredMode.store(next);
-    m_applyMode.Request();
-    return static_cast<cameraunlock::TrackingMode>(next);
-}
+cameraunlock::TrackingMode TrackerFeed::CycleMode() { return m_session.CycleMode(); }
 
 const char* TrackerFeed::ModeName() const {
-    switch (static_cast<cameraunlock::TrackingMode>(m_desiredMode.load())) {
+    switch (m_session.GetMode()) {
         case cameraunlock::TrackingMode::RotationAndPosition: return "6DOF (rotation + position)";
         case cameraunlock::TrackingMode::RotationOnly:        return "rotation only";
         case cameraunlock::TrackingMode::PositionOnly:        return "position only";
@@ -78,10 +69,6 @@ const char* TrackerFeed::ModeName() const {
 }
 
 void TrackerFeed::Update(bool enabled) {
-    if (m_applyMode.Consume()) {
-        m_session.SetMode(static_cast<cameraunlock::TrackingMode>(m_desiredMode.load()));
-    }
-
     if (!enabled) {
         Invalidate();
         return;
