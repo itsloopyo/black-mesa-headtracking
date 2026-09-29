@@ -37,9 +37,13 @@
 // The reader replaces a float that is not finite, clamps the smoothing pair into 0 to 1, and
 // keeps every hotkey code inside 0x01-0xFE, so neither N1 nor N2 can apply.
 //
-// LightFollowsHead and LightMultiplier are new rows. v0.1.1 always turned the flashlight with
-// the head at core's kDefaultLightMultiplier, which is what both rows default to, so every input
-// starts with the light as it did.
+// LightMultiplier is a new row. v0.1.1 always turned the flashlight with the head at core's
+// kDefaultLightMultiplier, which is what the row defaults to, so every input starts with the light
+// as it did.
+//
+// CollisionEnabled, CollisionMargin and CollisionReleaseSmoothing are new rows. v0.1.1 had no
+// lean collision, so there is no setting of the player's to carry: every input starts with the
+// clamp at the table's defaults.
 //
 // A row the player never changed from what v0.1.1 shipped follows Defaults.ini: the import lists
 // it in follows_defaults_ini and the migration writes it `default`, the tracking mode pair as one
@@ -297,8 +301,10 @@ struct Observed {
     float scale_x = 0, scale_y = 0, scale_z = 0;
     float fov = 0;
     bool log_to_file = false;
-    bool light_follows_head = false;
     float light_multiplier = 0;
+    bool collision_enabled = false;
+    float collision_margin = 0;
+    float collision_release = 0;
     std::vector<Hotkey> hotkeys;
 };
 
@@ -335,8 +341,10 @@ std::vector<std::string> Differences(const Observed& a, const Observed& b) {
     flt(a.scale_z, b.scale_z, "position scale z");
     flt(a.fov, b.fov, "FOV override");
     if (a.log_to_file != b.log_to_file) out.push_back("log to file");
-    if (a.light_follows_head != b.light_follows_head) out.push_back("light follows head");
     flt(a.light_multiplier, b.light_multiplier, "light multiplier");
+    if (a.collision_enabled != b.collision_enabled) out.push_back("collision enabled");
+    flt(a.collision_margin, b.collision_margin, "collision margin");
+    flt(a.collision_release, b.collision_release, "collision release smoothing");
     if (a.hotkeys != b.hotkeys) out.push_back("hotkeys");
     return out;
 }
@@ -392,8 +400,11 @@ Observed ObservePublished(const C& c) {
     o.scale_z = c.pos_world_scale * (c.pos_invert_z ? -1.0f : 1.0f);
     o.fov = c.fov_override;
     o.log_to_file = c.log_to_file;
-    o.light_follows_head = true;
     o.light_multiplier = cameraunlock::effects::kDefaultLightMultiplier;
+    const headtracking::Config fresh = headtracking::MakeConfigTable().defaults();
+    o.collision_enabled = fresh.collision_enabled;
+    o.collision_margin = fresh.lean_clamp.skin;
+    o.collision_release = fresh.lean_clamp.release_smoothing;
     o.hotkeys = LegacyHotkeys(c.toggle_vk, c.yaw_mode_vk, c.mode_cycle_vk);
     return o;
 }
@@ -560,8 +571,10 @@ Observed ObserveCanonical(const headtracking::Config& c) {
     o.scale_z = headtracking::kWorldUnitsPerMetre * (ps.invert_z ? -1.0f : 1.0f);
     o.fov = c.fov_override;
     o.log_to_file = c.log_to_file;
-    o.light_follows_head = c.light.follows_head;
     o.light_multiplier = c.light.multiplier;
+    o.collision_enabled = c.collision_enabled;
+    o.collision_margin = c.lean_clamp.skin;
+    o.collision_release = c.lean_clamp.release_smoothing;
     const std::pair<Action, const std::string*> lists[] = {
         {kToggle, &c.toggle_key_name}, {kCycleMode, &c.cycle_tracking_mode_key_name}, {kYawMode, &c.yaw_mode_key_name}};
     for (const auto& [action, list] : lists) {
@@ -641,7 +654,8 @@ Allowed ApplyApprovedChanges(const headtracking::legacy::Config& read) {
 
 // ---- Rows that follow Defaults.ini -----------------------------------------------------------
 
-// Every row of the table that follows Defaults.ini: every concept row, since none is PerGame.
+// Every row of the table that follows Defaults.ini: every global concept row, since none is
+// PerGame. CollisionMargin is not global, so it never does.
 const std::set<Concept>& AllRows() {
     static const std::set<Concept> all = {
         Concept::UdpPort,            Concept::EnableOnStartup,      Concept::WorldSpaceYaw,
@@ -649,7 +663,7 @@ const std::set<Concept>& AllRows() {
         Concept::RemoteSmoothing,    Concept::PositionLimitX,       Concept::PositionLimitY,
         Concept::PositionLimitYDown, Concept::PositionLimitZ,       Concept::PositionLimitZBack,
         Concept::ToggleKey,          Concept::CycleTrackingModeKey, Concept::YawModeKey,
-        Concept::LightFollowsHead,   Concept::LightMultiplier,
+        Concept::LightMultiplier,    Concept::CollisionEnabled,     Concept::CollisionReleaseSmoothing,
     };
     return all;
 }
@@ -685,8 +699,9 @@ std::set<Concept> UntouchedRows(const Observed& read, const Observed& shipped) {
     row(Bits(read.limit_z) != Bits(shipped.limit_z), Concept::PositionLimitZ);
     row(Bits(read.limit_z_back) != Bits(shipped.limit_z_back), Concept::PositionLimitZBack);
     for (const auto& [action, id] : kHotkeyRows) row(HotkeysOf(read, action) != HotkeysOf(shipped, action), id);
-    row(read.light_follows_head != shipped.light_follows_head, Concept::LightFollowsHead);
     row(Bits(read.light_multiplier) != Bits(shipped.light_multiplier), Concept::LightMultiplier);
+    row(read.collision_enabled != shipped.collision_enabled, Concept::CollisionEnabled);
+    row(Bits(read.collision_release) != Bits(shipped.collision_release), Concept::CollisionReleaseSmoothing);
     std::set<Concept> untouched;
     for (const Concept id : AllRows()) {
         if (!changed.count(id)) untouched.insert(id);
@@ -719,8 +734,9 @@ Observed OverDefaults(Observed want, const std::set<Concept>& follows, const Obs
     take(Concept::PositionLimitYDown, want.limit_y_down, defaults_ini.limit_y_down);
     take(Concept::PositionLimitZ, want.limit_z, defaults_ini.limit_z);
     take(Concept::PositionLimitZBack, want.limit_z_back, defaults_ini.limit_z_back);
-    take(Concept::LightFollowsHead, want.light_follows_head, defaults_ini.light_follows_head);
     take(Concept::LightMultiplier, want.light_multiplier, defaults_ini.light_multiplier);
+    take(Concept::CollisionEnabled, want.collision_enabled, defaults_ini.collision_enabled);
+    take(Concept::CollisionReleaseSmoothing, want.collision_release, defaults_ini.collision_release);
     std::vector<Hotkey> keys;
     for (const auto& [action, id] : kHotkeyRows) {
         const std::vector<Hotkey> from = HotkeysOf(follows.count(id) ? defaults_ini : want, action);
@@ -794,9 +810,9 @@ const char* const kSkewedDefaults =
     "[General]\r\nEnableOnStartup=false\r\nWorldSpaceYaw=false\r\nRotationEnabled=false\r\n\r\n"
     "[Smoothing]\r\nLocalSmoothing=0.5\r\nRemoteSmoothing=0.5\r\n\r\n"
     "[Position]\r\nPositionEnabled=true\r\nPositionLimitX=0.5\r\nPositionLimitY=0.5\r\nPositionLimitYDown=0.5\r\n"
-    "PositionLimitZ=0.5\r\nPositionLimitZBack=0.5\r\n\r\n"
+    "PositionLimitZ=0.5\r\nPositionLimitZBack=0.5\r\nCollisionEnabled=false\r\nCollisionReleaseSmoothing=0.5\r\n\r\n"
     "[Hotkeys]\r\nToggleKey=F8\r\nCycleTrackingModeKey=F9\r\nYawModeKey=F10\r\n\r\n"
-    "[Light]\r\nLightFollowsHead=false\r\nLightMultiplier=0.5\r\n";
+    "[Light]\r\nLightMultiplier=0.5\r\n";
 
 // The folder beside this executable the migrated files are written to, for lint-migrated.mjs,
 // which CTest runs after this test.

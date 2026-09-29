@@ -47,8 +47,17 @@ private:
     cameraunlock::config::FloatCodec angle_{0.0f, kMax};
 };
 
+// [Position] CollisionMargin's default, in Source units: the player hull's half width, so a lean
+// never holds the eye closer to a wall than the player's own body already does. The near plane
+// sits 7 units out, and its corners reach 12.8 units at the default 90-degree fov_desired on a
+// 16:9 screen and 15.2 on 21:9; the standoff has to clear the corner, not just the plane, or a
+// wall seen at a glancing angle still goes transparent. lean_trace.cpp logs the live figure.
+constexpr float kDefaultCollisionMargin = 16.0f;
+
 // Core's config with this game's own rows.
 struct Config : cameraunlock::HeadTrackingConfig {
+    Config() { lean_clamp.skin = kDefaultCollisionMargin; }
+
     // Field of view in the same units as the game's own fov_desired cvar: horizontal degrees
     // referenced to a 4:3 screen, which the mod widens for the actual viewport exactly as the
     // engine does. 0 leaves the game's FOV alone. Written straight into the render view the

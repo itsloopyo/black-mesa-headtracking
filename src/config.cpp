@@ -126,8 +126,9 @@ ImportResult Import(const LegacyInput& input, Config& out) {
     follows.Setting(Concept::ToggleKey, c.toggle_vk, shipped.toggle_vk);
     follows.Setting(Concept::CycleTrackingModeKey, c.mode_cycle_vk, shipped.mode_cycle_vk);
     follows.Setting(Concept::YawModeKey, c.yaw_mode_vk, shipped.yaw_mode_vk);
-    follows.NotInLegacy(Concept::LightFollowsHead);
     follows.NotInLegacy(Concept::LightMultiplier);
+    follows.NotInLegacy(Concept::CollisionEnabled);
+    follows.NotInLegacy(Concept::CollisionReleaseSmoothing);
 
     return read == legacy::ReadStatus::Absent
                ? ImportResult::Absent(std::move(dropped), std::move(shaping), follows.Concepts())
@@ -196,8 +197,8 @@ cameraunlock::config::ConfigTable<Config> MakeConfigTable() {
         {Concept::UdpPort, Concept::EnableOnStartup, Concept::WorldSpaceYaw, Concept::RotationEnabled,
          Concept::LocalSmoothing, Concept::RemoteSmoothing, Concept::PositionEnabled, Concept::PositionLimitX,
          Concept::PositionLimitY, Concept::PositionLimitYDown, Concept::PositionLimitZ, Concept::PositionLimitZBack,
-         Concept::ToggleKey, Concept::CycleTrackingModeKey, Concept::YawModeKey, Concept::LightFollowsHead,
-         Concept::LightMultiplier});
+         Concept::ToggleKey, Concept::CycleTrackingModeKey, Concept::YawModeKey, Concept::LightMultiplier,
+         Concept::CollisionEnabled, Concept::CollisionMargin, Concept::CollisionReleaseSmoothing});
     table.Select(Concept::WorldSpaceYaw).Writable()
         .Select(Concept::RotationEnabled).Writable()
         .Select(Concept::PositionEnabled).Writable();

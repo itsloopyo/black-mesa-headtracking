@@ -46,6 +46,7 @@ add_library(BlackMesaHeadTracking SHARED
     src/plugin.cpp
     src/tracker_feed.cpp
     src/hotkey_handler.cpp
+    src/lean_trace.cpp
     src/detour.cpp
     src/camera_hook.cpp
     src/fov_override.cpp

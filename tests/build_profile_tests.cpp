@@ -41,6 +41,9 @@ void TestShippedSteamProfiles() {
         Check(p->offsets.flashlight_update_rva != 0, "carries the flashlight update");
         Check(TraceFieldsFitBuffer(p->offsets.aim),
               "its trace_t offsets are read inside the trace buffer");
+        Check(p->HasLeanTrace(), "carries the lean collision trace");
+        Check(LeanTraceFieldsFitBuffer(p->offsets.lean),
+              "its lean trace_t offsets are read inside the trace buffer");
     }
 }
 
@@ -165,6 +168,15 @@ void TestTraceOffsetsAreBoundsChecked() {
     overrun.offsets.aim.trace_endpos = kTraceResultBufferSize - 4u;
     Check(!TraceFieldsFitBuffer(overrun.offsets.aim),
           "a profile whose endpos runs past the buffer is refused");
+
+    BuildProfile normalOverrun = kSteamProfile_20250607;
+    normalOverrun.offsets.lean.trace_plane_normal = kTraceResultBufferSize - 8u;
+    Check(!LeanTraceFieldsFitBuffer(normalOverrun.offsets.lean),
+          "a profile whose plane normal runs past the buffer is refused");
+
+    BuildProfile noNearPlane = kSteamProfile_20250607;
+    noNearPlane.offsets.view_setup.z_near = 0;
+    Check(!noNearPlane.HasLeanTrace(), "a missing near plane offset disables lean collision");
 
     BuildProfile fractionOverrun = kSteamProfile_20250607;
     fractionOverrun.offsets.aim.trace_fraction = kTraceResultBufferSize + 4u;

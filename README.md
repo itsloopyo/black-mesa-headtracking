@@ -147,7 +147,7 @@ Hotkeys only fire while the Black Mesa window has focus.
 <!-- cameraunlock:config -->
 The mod reads its settings from `CameraUnlock.ini` in the game folder, and creates the file when it starts and finds none. Edit it with any text editor.
 
-A setting set to `default` takes its value from `Defaults.ini`, which every head tracking mod that keeps its settings in `CameraUnlock.ini` reads. Head tracking mods that keep their settings in another file do not read it. Writing a value in place of `default` changes that setting for this game only. When the mod saves a setting that a hotkey changed in game, it writes the new value in place of `default`, so that setting no longer follows `Defaults.ini` in this game until you set it to `default` again.
+A setting set to `default` takes its value from `Defaults.ini`, which every head tracking mod that keeps its settings in `CameraUnlock.ini` reads. Head tracking mods that keep their settings in another file do not read it. Changing a setting in `Defaults.ini` changes it in every game that has it set to `default`. Writing a value in place of `default` changes that setting for this game only. When the mod saves a setting that a hotkey changed in game, it writes the new value in place of `default`, so that setting no longer follows `Defaults.ini` in this game until you set it to `default` again.
 
 `Defaults.ini` is `%AppData%\CameraUnlock\Defaults.ini` on Windows; `$XDG_CONFIG_HOME/CameraUnlock/Defaults.ini` on Linux, or `~/.config/CameraUnlock/Defaults.ini` where `XDG_CONFIG_HOME` is not set, under Wine and Proton too; and `~/Library/Application Support/CameraUnlock/Defaults.ini` on macOS. The mod's log, where it writes one, names the file it read.
 
@@ -167,10 +167,11 @@ The built-in value of each setting set to `default` below:
 - `PositionLimitYDown=0.2`
 - `PositionLimitZ=0.4`
 - `PositionLimitZBack=0.1`
+- `CollisionEnabled=true`
+- `CollisionReleaseSmoothing=0.9`
 - `ToggleKey=End, Ctrl+Shift+Y`
 - `CycleTrackingModeKey=PageUp, Ctrl+Shift+G`
 - `YawModeKey=PageDown, Ctrl+Shift+H`
-- `LightFollowsHead=true`
 - `LightMultiplier=1.5`
 
 With every setting at its default, the file reads:
@@ -183,8 +184,9 @@ With every setting at its default, the file reads:
 ; that keeps its settings in CameraUnlock.ini reads: %AppData%\CameraUnlock\Defaults.ini on
 ; Windows, $XDG_CONFIG_HOME/CameraUnlock/Defaults.ini (normally ~/.config/CameraUnlock) on
 ; Linux, under Wine and Proton too, and ~/Library/Application Support/CameraUnlock/Defaults.ini
-; on macOS. The log names the file it read. Write a value instead of default to change that
-; setting for this game only.
+; on macOS. The log names the file it read. Change a setting in Defaults.ini to change it in
+; every game that has it set to default, or write a value here instead of default to change it
+; for this game only.
 
 [CameraUnlock]
 ; Written by the mod. Leave this section in place.
@@ -224,6 +226,14 @@ PositionLimitYDown=default
 PositionLimitZ=default
 ; How far, in metres, leaning back can move the view.
 PositionLimitZBack=default
+; true: leaning stops at walls instead of moving the view through them.
+; Only games whose mod sweeps the level for walls read this; the rest ignore it.
+CollisionEnabled=default
+; How far the view is held off a wall when you lean into it, in the game's own units.
+CollisionMargin=16.0
+; How gently the view eases back out after a wall stopped a lean.
+; 0 is the quickest, 1 the slowest.
+CollisionReleaseSmoothing=default
 
 [Hotkeys]
 ; Turns head tracking on and off.
@@ -234,8 +244,6 @@ CycleTrackingModeKey=default
 YawModeKey=default
 
 [Light]
-; true: a light you carry points where you look instead of where you aim.
-LightFollowsHead=default
 ; How far the light turns for each degree your head turns.
 ; 1 matches the view, 0 keeps the light on your aim.
 LightMultiplier=default
@@ -323,6 +331,10 @@ is in force. Attach it to a bug report.
 - Raise `RemoteSmoothing` in `CameraUnlock.ini` if the tracker is a phone or another device on the network, or route it through OpenTrack so its filters can clean the feed up.
 - For webcam tracking, improve the lighting on your face.
 - If the view flicks between two positions, two apps are both sending to port 4242. The log names both addresses; close the one you are not using.
+
+**Leaning stops short near a wall**
+
+- That is the wall check: the view is held `CollisionMargin` units off anything solid, so it never passes through it. The log's `[lean]` lines show each time it holds the view back and by how much. Lowering `CollisionMargin` lets you lean closer, and below the distance the log reports for the near plane's corner a wall seen at a glancing angle can turn see-through. `CollisionEnabled=false` turns the check off.
 
 **Leaning or turning moves the view the wrong way**
 

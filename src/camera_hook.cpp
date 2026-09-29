@@ -25,20 +25,24 @@
 #include "camera_hook.h"
 
 #include <Windows.h>
+#include <cmath>
 #include <cstdint>
 
 #include "aim_state.h"
 #include "angles.h"
 #include "builds/build_registry.h"
+#include "cameraunlock/camera/lean_clamp.h"
 #include "cameraunlock/effects/head_follow_light.h"
 #include "cameraunlock/hooks/hook_manager.h"
 #include "cameraunlock/memory/pe_fingerprint.h"
+#include "cameraunlock/time/frame_clock.h"
 #include "config.h"
 #include "debug_log.h"
 #include "detour.h"
 #include "flashlight_hook.h"
 #include "fov_override.h"
 #include "game_state.h"
+#include "lean_trace.h"
 #include "log_throttle.h"
 #include "plugin.h"
 #include "source_math.h"
@@ -125,15 +129,157 @@ void DiagnosticLog(const ViewSetup& view, const TrackingDelta& delta) {
            delta.pitch, delta.yaw, delta.roll, delta.x, delta.y, delta.z);
 }
 
+// ----- Lean collision -------------------------------------------------------
+//
+// A lean must never put the eye inside the level. The clean eye is where the
+// game put the camera, which the player hull already keeps clear of walls; the
+// lean is swept from there and cut to whatever the level leaves room for,
+// before it is applied.
+
+// Set once, before the detour is armed: CollisionEnabled is on and the trace
+// resolved on this build.
+bool g_leanTraceReady = false;
+cameraunlock::camera::LeanClamp g_leanClamp;
+lean_trace::Context g_leanContext;
+cameraunlock::time::FrameClock g_leanClock;
+
+// A clean eye that moves further than this in one frame has been teleported or
+// the level has changed under it, and the allowance carried from the last
+// frame describes a wall that is no longer there.
+constexpr float kCameraCutUnits = 128.0f;
+float g_lastCleanEye[3] = {0.0f, 0.0f, 0.0f};
+bool g_haveLastCleanEye = false;
+
+// Contact comes and goes as often as the head brushes a wall, so a change is
+// written at most once per this many frames, and always eventually.
+constexpr int kContactLogIntervalFrames = 60;
+int g_leanFrame = 0;
+int g_lastContactLogFrame = -kContactLogIntervalFrames;
+bool g_loggedContact = false;
+bool g_loggedQueryFailed = false;
+
+// The steady sample beside the transitions: they alone cannot tell "the sweep
+// runs and the room is open" from "the sweep is not running".
+constexpr int kLeanBurstLines           = 2;
+constexpr int kLeanEarlyLines           = 10;
+constexpr int kLeanEarlyIntervalFrames  = 600;
+constexpr int kLeanSteadyIntervalFrames = 3000;
+
+void ResetLeanClamp() {
+    g_leanClamp.Reset();
+    g_haveLastCleanEye = false;
+}
+
+// The standoff has to clear the near plane's CORNER, not only the plane: a
+// wall seen at a glancing angle crosses the corner first. Read off the frame's
+// own projection, logged once, and warned about once if the margin falls
+// inside it.
+void CheckStandoff(const ViewSetup& view) {
+    static bool s_logged = false;
+    static bool s_warned = false;
+    if (s_warned) return;
+
+    const float zNear = view.ZNear();
+    const float fov = view.Fov();
+    const int w = view.RectWidth();
+    const int h = view.RectHeight();
+    if (!(zNear > 0.0f) || !(fov > 0.0f && fov < 179.0f) || w <= 0 || h <= 0) {
+        if (!s_logged) {
+            s_logged = true;
+            HT_LOG("[lean] the near plane reads as %.2f at %.2f degrees in %dx%d - the margin cannot "
+                   "be checked against it", zNear, fov, w, h);
+        }
+        return;
+    }
+    const float tanH = std::tan(fov * 0.5f * kDegToRad);
+    const float tanV = tanH * static_cast<float>(h) / static_cast<float>(w);
+    const float corner = zNear * std::sqrt(1.0f + tanH * tanH + tanV * tanV);
+    if (!s_logged) {
+        s_logged = true;
+        HT_LOG("[lean] near plane %.2f units out, its corner %.2f at %.2f degrees in %dx%d; "
+               "CollisionMargin %.2f", zNear, corner, fov, w, h, g_leanContext.skin);
+    }
+    if (g_leanContext.skin < corner) {
+        s_warned = true;
+        HT_LOG("[lean] WARN: CollisionMargin %.2f is inside the near plane's corner (%.2f units at "
+               "%.2f degrees in %dx%d) - a wall seen at a glancing angle can still go transparent "
+               "while you lean", g_leanContext.skin, corner, fov, w, h);
+    }
+}
+
+void LogLeanClamp(float asked, float kept) {
+    ++g_leanFrame;
+    const bool failed = g_leanClamp.LastQueryFailed();
+    if (failed != g_loggedQueryFailed) {
+        g_loggedQueryFailed = failed;
+        HT_LOG(failed ? "[lean] the wall check could not run - the lean passes through unclamped"
+                      : "[lean] the wall check is running again");
+    }
+    const bool contact = g_leanClamp.InContact();
+    if (contact != g_loggedContact &&
+        g_leanFrame - g_lastContactLogFrame >= kContactLogIntervalFrames) {
+        g_loggedContact = contact;
+        g_lastContactLogFrame = g_leanFrame;
+        if (contact) {
+            const lean_trace::LastHit hit = lean_trace::Last();
+            HT_LOG("[lean] held off a surface: asked %.1f units, kept %.1f (hit %.1f along the "
+                   "lean, approach cos %.2f, margin %.1f)",
+                   asked, kept, hit.distance, hit.cosine, g_leanContext.skin);
+        } else {
+            HT_LOG("[lean] clear: the full lean is back");
+        }
+    }
+    static LogThrottle s_throttle(kLeanBurstLines, kLeanEarlyLines, kLeanEarlyIntervalFrames,
+                                  kLeanSteadyIntervalFrames);
+    if (s_throttle.ShouldLog()) {
+        HT_LOG("[lean] sample asked=%.2f kept=%.2f contact=%d failed=%d", asked, kept,
+               contact ? 1 : 0, failed ? 1 : 0);
+    }
+}
+
+// Cuts `offset` (world units, added to `eye`) to what the level leaves room
+// for, and returns the fraction of it kept.
+float ClampLeanToWorld(const ViewSetup& view, const float* eye, float* offset) {
+    const float dt = g_leanClock.Tick();
+    if (!g_leanTraceReady) return 1.0f;
+
+    if (g_haveLastCleanEye) {
+        const float dx = eye[0] - g_lastCleanEye[0];
+        const float dy = eye[1] - g_lastCleanEye[1];
+        const float dz = eye[2] - g_lastCleanEye[2];
+        if (dx * dx + dy * dy + dz * dz > kCameraCutUnits * kCameraCutUnits) g_leanClamp.Reset();
+    }
+    Copy3(g_lastCleanEye, eye);
+    g_haveLastCleanEye = true;
+
+    CheckStandoff(view);
+
+    using cameraunlock::math::Vec3;
+    const Vec3 desired(offset[0], offset[1], offset[2]);
+    const Vec3 kept = g_leanClamp.Apply(Vec3(eye[0], eye[1], eye[2]), desired, dt,
+                                        &lean_trace::Query, &g_leanContext);
+    const float asked = desired.Magnitude();
+    const float allowed = kept.Magnitude();
+    LogLeanClamp(asked, allowed);
+
+    offset[0] = kept.x;
+    offset[1] = kept.y;
+    offset[2] = kept.z;
+    return asked > 0.0f ? allowed / asked : 1.0f;
+}
+
 // ----- Pose injection -------------------------------------------------------
 
 // Shifts the render origin in the CLEAN view basis - the one built from the
 // angles before the head delta - so the lean follows the body rather than the
-// head-rotated view. `delta` receives the applied offset in Source units for
-// the diagnostic line.
-void ApplyPositionalLean(const Plugin& plugin, const float* cleanAngles, float* org,
-                         float zoomFactor, TrackingDelta& delta) {
-    if (!plugin.GetPositionOffset(delta.x, delta.y, delta.z)) return;
+// head-rotated view, then cuts it to what the level leaves room for. `delta`
+// receives the applied offset in Source units for the diagnostic line.
+void ApplyPositionalLean(const Plugin& plugin, const ViewSetup& view, const float* cleanAngles,
+                         float* org, float zoomFactor, TrackingDelta& delta) {
+    if (!plugin.GetPositionOffset(delta.x, delta.y, delta.z)) {
+        ResetLeanClamp();
+        return;
+    }
 
     float fwd[3], right[3], up[3];
     source::AngleVectors(cleanAngles, fwd, right, up);
@@ -146,9 +292,15 @@ void ApplyPositionalLean(const Plugin& plugin, const float* cleanAngles, float* 
     delta.x *= kPosXSign * zoomFactor;
     delta.y *= kPosYSign * zoomFactor;
     delta.z *= kPosZSign * zoomFactor;
+    float offset[3];
     for (int i = 0; i < 3; ++i) {
-        org[i] += right[i] * delta.x + up[i] * delta.y + fwd[i] * delta.z;
+        offset[i] = right[i] * delta.x + up[i] * delta.y + fwd[i] * delta.z;
     }
+    const float kept = ClampLeanToWorld(view, org, offset);
+    delta.x *= kept;
+    delta.y *= kept;
+    delta.z *= kept;
+    for (int i = 0; i < 3; ++i) org[i] += offset[i];
 }
 
 // Composes the head rotation onto the render view's QAngle, in the yaw mode the
@@ -225,10 +377,14 @@ void ApplyTracking(const ViewSetup& view) {
             delta.applied = true;
             // Position first: it reads the clean angles, which the rotation
             // below overwrites in place.
-            ApplyPositionalLean(plugin, aim.clean_angles, org, zoom, delta);
+            ApplyPositionalLean(plugin, view, aim.clean_angles, org, zoom, delta);
             ApplyRotationDelta(plugin, yawRad, pitchRad, rollRad, zoom, ang, aim.light_angles,
                                delta);
+        } else {
+            ResetLeanClamp();
         }
+    } else {
+        ResetLeanClamp();
     }
 
     // Published unconditionally, including the untracked case: a stale state
@@ -298,6 +454,20 @@ const builds::BuildProfile* ResolveBuildProfile(HMODULE client) {
     return profile;
 }
 
+void ResolveLeanCollision() {
+    const Config& config = GetPlugin().GetConfig();
+    if (!config.collision_enabled) {
+        HT_LOG("[lean] CollisionEnabled=false - leaning is not stopped by walls");
+        return;
+    }
+    if (!lean_trace::Resolve(*g_profile)) return;
+    g_leanClamp.SetSettings(config.lean_clamp);
+    g_leanContext.skin = config.lean_clamp.skin;
+    g_leanTraceReady = true;
+    HT_LOG("[lean] wall check on: margin %.2f units, release smoothing %.2f",
+           config.lean_clamp.skin, config.lean_clamp.release_smoothing);
+}
+
 // This is the mod's first hook, so it is where MinHook itself is brought up.
 bool InstallRenderViewDetour(void* target) {
     using cameraunlock::hooks::HookManager;
@@ -332,6 +502,7 @@ bool CameraHook::Install() {
     if (!GetGameState().Resolve()) return false;
 
     ResolveFovConVars(client, *g_profile);
+    ResolveLeanCollision();
 
     void* target = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(client)
                                            + g_profile->offsets.render_view_rva);

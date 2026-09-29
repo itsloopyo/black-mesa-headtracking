@@ -23,6 +23,7 @@ public:
 
     float& Fov() const { return *Field<float>(m_offsets->fov); }
     float& FovViewmodel() const { return *Field<float>(m_offsets->fov_viewmodel); }
+    float ZNear() const { return *Field<float>(m_offsets->z_near); }
 
     int RectWidth() const { return *Field<int>(m_offsets->rect_width); }
     int RectHeight() const { return *Field<int>(m_offsets->rect_height); }

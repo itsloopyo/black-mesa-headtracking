@@ -44,6 +44,7 @@ constexpr ViewSetupOffsets kViewSetupLayout_20250607 = {
     0xB8u,  // fovViewmodel - the float straight after fov
     0x10u,  // rect width
     0x18u,  // rect height
+    0xD4u,  // zNear - the float straight after angles
 };
 
 // The reticle surface, read off CHudCrosshair's own code rather than carried
@@ -161,6 +162,15 @@ constexpr EngineStateOffsets kEngineState_20250607 = {
 //
 // viewmodel_fov is 0 because this client.dll does not register it - the string
 // does not appear anywhere in the image.
+// UTIL_TraceLine's trace_t: plane.normal follows startpos and endpos, and
+// startsolid is the second of the two bools after dispFlags. fraction at 44 and
+// m_pEnt at 76, which the profile already pins, put the fields between them
+// exactly where Source's layout has them.
+constexpr LeanTraceOffsets kLeanTrace_20250607 = {
+    24u,  // trace_t::plane.normal
+    55u,  // trace_t::startsolid
+};
+
 constexpr FovConVarOffsets kFovConVars_20250607 = {
     0x6D9730u,  // fov_desired
     0u,         // viewmodel_fov - not registered by this client.dll
@@ -195,7 +205,7 @@ extern const BuildProfile kSteamProfile_20250607 = {
     "steam-win32-20250607",
     { 0x684499C9u, 0x007BC000u, 0x00000000u },
     { 0x20EE40u, kViewSetupLayout_20250607, kAimLayout_20250607, kEngineState_20250607,
-      kFovConVars_20250607, 0x189570u },
+      kFovConVars_20250607, 0x189570u, kLeanTrace_20250607 },
 };
 
 }  // namespace headtracking::builds

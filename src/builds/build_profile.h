@@ -18,6 +18,7 @@ struct ViewSetupOffsets {
     uint32_t fov_viewmodel;  // float fovViewmodel
     uint32_t rect_width;     // int width, the rendered viewport
     uint32_t rect_height;    // int height
+    uint32_t z_near;         // float zNear, the near clip distance in world units
 };
 
 // The client.dll surface the reticle needs. Black Mesa does not draw its
@@ -64,6 +65,20 @@ constexpr bool TraceFieldFits(uint32_t offset, uint32_t size) {
 constexpr bool TraceFieldsFitBuffer(const AimOffsets& aim) {
     return TraceFieldFits(aim.trace_endpos, static_cast<uint32_t>(sizeof(float) * 3))
         && TraceFieldFits(aim.trace_fraction, static_cast<uint32_t>(sizeof(float)));
+}
+
+// The two further trace_t fields the lean collision query reads, beside the
+// endpos and fraction the aim already pins. The query runs the same
+// UTIL_TraceLine as the aim, so a profile without the aim's trace has no lean
+// collision either.
+struct LeanTraceOffsets {
+    uint32_t trace_plane_normal;  // byte offset of trace_t::plane.normal
+    uint32_t trace_start_solid;   // byte offset of trace_t::startsolid (bool)
+};
+
+constexpr bool LeanTraceFieldsFitBuffer(const LeanTraceOffsets& lean) {
+    return TraceFieldFits(lean.trace_plane_normal, static_cast<uint32_t>(sizeof(float) * 3))
+        && TraceFieldFits(lean.trace_start_solid, 1u);
 }
 
 // The ConVar the game bases its own field of view on. The mod needs it because
@@ -130,6 +145,7 @@ struct OffsetTable {
     EngineStateOffsets engine;
     FovConVarOffsets fov;
     uint32_t flashlight_update_rva;  // the light renderer's flashlight update
+    LeanTraceOffsets lean;
 };
 
 // One entry per shipped Black Mesa client.dll build we have offsets for. The
@@ -163,6 +179,15 @@ struct BuildProfile {
     bool HasEngineState() const {
         return offsets.engine.engine_ptr_rva != 0 && offsets.engine.interface_version != nullptr &&
                offsets.engine.slot_is_in_game != 0 && offsets.engine.slot_get_level_name != 0;
+    }
+
+    // Lean collision: the aim's trace function and local player, the trace_t
+    // fields the query reads, and the near plane the standoff is checked
+    // against. Without it the lean is not stopped by walls.
+    bool HasLeanTrace() const {
+        return offsets.aim.trace_line_rva != 0 && offsets.aim.local_player_rva != 0 &&
+               offsets.lean.trace_plane_normal != 0 && offsets.lean.trace_start_solid != 0 &&
+               offsets.view_setup.z_near != 0;
     }
 
     // Also optional, and separately so: a build whose fov_desired ConVar has not
