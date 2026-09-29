@@ -186,10 +186,16 @@ constexpr float kNoZoomScaling = 1.0f;
 // it is still sweeping.
 constexpr float kZoomLogBand = 0.02f;
 
+// A zoom eases the FOV over several frames and moves the factor by more than
+// the log band on every one of them, so a new factor is only reported once it
+// has held to within this since the frame before.
+constexpr float kZoomSettledBand = 0.0005f;
+
 // Zero, not 1.0, so the opening frame always logs: that line is the gate, and a
 // factor that starts at exactly 1.0 is the case it most needs to prove.
 struct ZoomLog {
     float logged_factor = 0.0f;
+    float previous_factor = 0.0f;
 };
 
 float TanHalf(float fovDegrees) { return std::tan(fovDegrees * 0.5f * kDegToRad); }
@@ -202,12 +208,15 @@ float TanHalf(float fovDegrees) { return std::tan(fovDegrees * 0.5f * kDegToRad)
 //
 // Written off the camera rather than off the pose, so the basis is visible with
 // no tracker connected and without loading a save, and again whenever the FOV
-// being rendered moves away from what was last reported.
+// being rendered settles away from what was last reported.
 //
 // THE GATE IS THAT THE FIRST LINE READS x1.0000.
 void LogZoomBasis(const Viewport& viewport, float unzoomed4x3, float base, float live,
                   float factor, ZoomLog& log) {
-    if (std::fabs(factor - log.logged_factor) <= kZoomLogBand) return;
+    const bool settled = std::fabs(factor - log.previous_factor) <= kZoomSettledBand;
+    log.previous_factor = factor;
+    const bool first = log.logged_factor == 0.0f;
+    if (!first && (!settled || std::fabs(factor - log.logged_factor) <= kZoomLogBand)) return;
     log.logged_factor = factor;
     HT_LOG("[view] head pose zoom factor x%.4f: rendering at %.2f horizontal degrees against "
            "an un-zoomed %.2f (%.1f at 4:3, widened by x%.4f for %dx%d) - %s",
