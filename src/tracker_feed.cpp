@@ -13,8 +13,10 @@ namespace headtracking {
 void TrackerFeed::Start(const Config& config) {
     m_port = static_cast<uint16_t>(config.udp_port);
     // The table reads a pair that names no mode as its defaults, so the pair always decodes.
-    m_session.SetMode(
-        cameraunlock::DecodeTrackingMode(config.rotation_enabled, config.position_enabled).value());
+    const cameraunlock::TrackingMode mode =
+        cameraunlock::DecodeTrackingMode(config.rotation_enabled, config.position_enabled).value();
+    m_session.SetMode(mode);
+    m_desiredMode.store(static_cast<int>(mode));
 
     m_session.SetLocalSmoothing(config.local_smoothing);
     m_session.SetRemoteSmoothing(config.remote_smoothing);
@@ -57,10 +59,17 @@ void TrackerFeed::Invalidate() {
     m_cachedPosValid.store(false, std::memory_order_release);
 }
 
-cameraunlock::TrackingMode TrackerFeed::CycleMode() { return m_session.CycleMode(); }
+// From the applied mode, not the desired one, so two presses before the render
+// thread has run step the cycle once.
+cameraunlock::TrackingMode TrackerFeed::CycleMode() {
+    const int next = (static_cast<int>(m_session.GetMode()) + 1) % 3;
+    m_desiredMode.store(next);
+    m_applyMode.Request();
+    return static_cast<cameraunlock::TrackingMode>(next);
+}
 
 const char* TrackerFeed::ModeName() const {
-    switch (m_session.GetMode()) {
+    switch (static_cast<cameraunlock::TrackingMode>(m_desiredMode.load())) {
         case cameraunlock::TrackingMode::RotationAndPosition: return "6DOF (rotation + position)";
         case cameraunlock::TrackingMode::RotationOnly:        return "rotation only";
         case cameraunlock::TrackingMode::PositionOnly:        return "position only";
@@ -69,23 +78,27 @@ const char* TrackerFeed::ModeName() const {
 }
 
 void TrackerFeed::Update(bool enabled) {
+    if (m_applyMode.Consume()) {
+        m_session.SetMode(static_cast<cameraunlock::TrackingMode>(m_desiredMode.load()));
+    }
+
     if (!enabled) {
         Invalidate();
         return;
     }
 
-    if (!m_receiver.IsReceiving()) {
-        if (m_wasConnected) {
-            HT_LOG("[plugin] tracking source disconnected (no packets within timeout)");
-            m_wasConnected = false;
+    // A tracker that stops sending holds the last pose rather than snapping the
+    // view back to centre: the session keeps reporting the last sample it had,
+    // and the view blends on from there when packets resume.
+    const bool receiving = m_receiver.IsReceiving();
+    if (receiving != m_wasConnected) {
+        if (receiving) {
+            HT_LOG("[plugin] tracking source connected on UDP %u (remote=%d)",
+                   m_port, m_receiver.IsRemoteConnection() ? 1 : 0);
+        } else {
+            HT_LOG("[plugin] tracking source stopped sending - holding the last pose");
         }
-        Invalidate();
-        return;
-    }
-    if (!m_wasConnected) {
-        HT_LOG("[plugin] tracking source connected on UDP %u (remote=%d)",
-               m_port, m_receiver.IsRemoteConnection() ? 1 : 0);
-        m_wasConnected = true;
+        m_wasConnected = receiving;
     }
 
     const float dt = m_frameClock.Tick();

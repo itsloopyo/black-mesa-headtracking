@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstdint>
 
+#include "cameraunlock/input/deferred_actions.h"
 #include "cameraunlock/protocol/udp_receiver.h"
 #include "cameraunlock/time/frame_clock.h"
 #include "cameraunlock/tracking/head_tracking_session.h"
@@ -31,8 +32,9 @@ public:
     bool GetRotationRadians(float& yaw, float& pitch, float& roll) const;
     bool GetPositionOffset(float& x, float& y, float& z) const;
 
-    // Moves to the next tracking mode and returns it.
+    // Called on the hotkey thread. Returns the mode the next Update() applies.
     cameraunlock::TrackingMode CycleMode();
+    // The mode the next Update() applies, which is the running one once it has.
     const char* ModeName() const;
 
 private:
@@ -50,6 +52,12 @@ private:
     // back to LocalSmoothing forever, with nothing at the call site to show it.
     static_assert(decltype(m_session)::kHasRemoteConnection,
                   "receiver must expose IsRemoteConnection() or remote smoothing never applies");
+    // A mode change resets the position interpolator and processor, which
+    // Update() is running on the render thread, so the hotkey thread only asks
+    // for it and Update() applies it.
+    std::atomic<int> m_desiredMode{0};
+    cameraunlock::input::DeferredAction m_applyMode;
+
     cameraunlock::time::FrameClock m_frameClock;
     bool m_isRemoteConnection = false;
     // Tri-state: false/false is indistinguishable from a local tracker, so a

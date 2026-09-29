@@ -3,6 +3,7 @@
 #pragma once
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -57,9 +58,10 @@ private:
     void InstallCameraHook();
     void StartHotkeys();
 
-    // Logs a save's lines, and its reason when it wrote nothing. Save never retries: the
-    // session keeps the new value either way.
-    void LogSave(const char* what, const cameraunlock::config::ConfigSaveResult& saved);
+    // Saves `change` and logs the result, and its reason when it wrote nothing. Save never
+    // retries: the session keeps the new value either way. Runs on the hotkey thread, where an
+    // exception escaping the callback is std::terminate, so one the owner throws is logged here.
+    void Save(const char* what, const std::function<void(Config&)>& change);
 
     // Built once in LoadConfig, before anything reads CameraUnlock.ini.
     std::optional<cameraunlock::config::ConfigOwner<Config>> m_owner;

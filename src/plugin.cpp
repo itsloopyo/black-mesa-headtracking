@@ -2,6 +2,8 @@
 // Copyright (c) 2026 itsloopyo / CameraUnlock
 #include "plugin.h"
 
+#include <exception>
+
 #include "camera_hook.h"
 #include "crosshair_hook.h"
 #include "debug_log.h"
@@ -68,11 +70,16 @@ void Plugin::StartHotkeys() {
     m_hotkeys->Start(*this, m_config);
 }
 
-void Plugin::LogSave(const char* what, const cameraunlock::config::ConfigSaveResult& saved) {
-    for (const std::string& line : saved.log) HT_LOG("[config] %s", line.c_str());
-    if (saved.status != cameraunlock::config::ConfigSaveStatus::Saved) {
-        HT_LOG("[config] %s not saved (%s): %s", what,
-               cameraunlock::config::ConfigSaveStatusName(saved.status), saved.reason.c_str());
+void Plugin::Save(const char* what, const std::function<void(Config&)>& change) {
+    try {
+        const cameraunlock::config::ConfigSaveResult saved = m_owner->Save(change);
+        for (const std::string& line : saved.log) HT_LOG("[config] %s", line.c_str());
+        if (saved.status != cameraunlock::config::ConfigSaveStatus::Saved) {
+            HT_LOG("[config] %s not saved (%s): %s", what,
+                   cameraunlock::config::ConfigSaveStatusName(saved.status), saved.reason.c_str());
+        }
+    } catch (const std::exception& e) {
+        HT_LOG("[config] %s not saved: %s", what, e.what());
     }
 }
 
@@ -91,16 +98,16 @@ void Plugin::ToggleYawMode() {
     const bool next = !m_worldSpaceYaw.load();
     m_worldSpaceYaw.store(next);
     HT_LOG("[plugin] yaw mode -> %s", next ? "world-space" : "camera-local");
-    LogSave("WorldSpaceYaw", m_owner->Save([next](Config& c) { c.world_space_yaw = next; }));
+    Save("WorldSpaceYaw", [next](Config& c) { c.world_space_yaw = next; });
 }
 
 void Plugin::CycleTrackingMode() {
     const cameraunlock::TrackingModeChannels mode = cameraunlock::EncodeTrackingMode(m_feed.CycleMode());
     HT_LOG("[plugin] tracking mode -> %s", m_feed.ModeName());
-    LogSave("tracking mode", m_owner->Save([mode](Config& c) {
+    Save("tracking mode", [mode](Config& c) {
         c.rotation_enabled = mode.rotation_enabled;
         c.position_enabled = mode.position_enabled;
-    }));
+    });
 }
 
 void Plugin::Update() { m_feed.Update(m_enabled.load()); }
